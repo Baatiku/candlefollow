@@ -1,3 +1,4 @@
+import config as app_config
 """Pure market metrics for straddle suitability (shared by bot and analysis)."""
 from __future__ import annotations
 
@@ -232,7 +233,7 @@ def metrics_at_timestamp(
     analysis_candles: int = 20,
 ) -> dict | None:
     try:
-        candles = get_candles_fn(asset, 60, analysis_candles, end_ts)
+        candles = get_candles_fn(asset, app_config.FOLLOW_CANDLE_TIMEFRAME, analysis_candles, end_ts)
     except Exception:
         return None
     if not candles:

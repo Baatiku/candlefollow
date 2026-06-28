@@ -1,3 +1,4 @@
+import config as app_config
 """Analyze winning vs losing rounds against historical candle patterns."""
 from __future__ import annotations
 
@@ -639,7 +640,7 @@ def backtest_pair_readiness(
         return {"error": "not connected", "asset": asset}
 
     try:
-        candles = api.get_candles(asset, 60, lookback_candles + 15, time.time())
+        candles = api.get_candles(asset, app_config.FOLLOW_CANDLE_TIMEFRAME, lookback_candles + 15, time.time())
     except Exception as e:
         return {"error": str(e), "asset": asset}
 

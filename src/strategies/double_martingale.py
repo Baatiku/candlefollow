@@ -1718,7 +1718,7 @@ class DoubleMartingaleBot:
         if not self.api or spot is None or spot <= 0:
             return 0.0, 0.0
         try:
-            candles = self._get_candles_safe(asset_name, 60, count, time.time())
+            candles = self._get_candles_safe(asset_name, app_config.FOLLOW_CANDLE_TIMEFRAME, count, time.time())
             if not candles or len(candles) < count:
                 return 0.0, 0.0
 
@@ -1837,7 +1837,7 @@ class DoubleMartingaleBot:
         if not self.api:
             return 0.0
         try:
-            candles = self._get_candles_safe(asset_name, 60, count, time.time())
+            candles = self._get_candles_safe(asset_name, app_config.FOLLOW_CANDLE_TIMEFRAME, count, time.time())
             if not candles or len(candles) < 2:
                 return 0.0
 
@@ -1857,7 +1857,7 @@ class DoubleMartingaleBot:
         if not self.api:
             return True, 0.0, 0.0
         try:
-            candles = self._get_candles_safe(asset_name, 60, 7, time.time())
+            candles = self._get_candles_safe(asset_name, app_config.FOLLOW_CANDLE_TIMEFRAME, 7, time.time())
             if not candles or len(candles) < 6:
                 return True, 0.0, 0.0
 
@@ -1885,7 +1885,7 @@ class DoubleMartingaleBot:
         if not self.api:
             return None
         candles = self._get_candles_safe(
-            asset_name, 60, self.asset_analysis_candles, time.time()
+            asset_name, app_config.FOLLOW_CANDLE_TIMEFRAME, self.asset_analysis_candles, time.time()
         )
         if not candles or len(candles) < 8:
             return None
@@ -2011,7 +2011,7 @@ class DoubleMartingaleBot:
         if not self.api:
             return None
         try:
-            candles = self._get_candles_safe(asset_name, 60, count, time.time())
+            candles = self._get_candles_safe(asset_name, app_config.FOLLOW_CANDLE_TIMEFRAME, count, time.time())
             return entry_snapshot_from_candles(
                 candles,
                 min_candle_body_pct=self.min_candle_body_pct,
@@ -2183,7 +2183,7 @@ class DoubleMartingaleBot:
                 prices = self._price_data.get(60, [])
             spot = self._estimate_spot_price(prices)
         if not spot and self.api:
-            candles = self._get_candles_safe(asset_name, 60, max(5, 3), time.time())
+            candles = self._get_candles_safe(asset_name, app_config.FOLLOW_CANDLE_TIMEFRAME, max(5, 3), time.time())
             if candles:
                 spot = float(candles[-1].get("close", 0) or 0)
         if spot and spot > 0 and atr > 0:
@@ -2198,7 +2198,7 @@ class DoubleMartingaleBot:
 
         if call_info and put_info and spot and spot > 0:
             try:
-                candles = self._get_candles_safe(asset_name, 60, 5, time.time())
+                candles = self._get_candles_safe(asset_name, app_config.FOLLOW_CANDLE_TIMEFRAME, 5, time.time())
                 if candles and len(candles) >= 3:
                     recent = candles[-3:]
                     highs = [float(c.get("max", c.get("high", 0))) for c in recent]
@@ -2216,7 +2216,7 @@ class DoubleMartingaleBot:
                 long_slope, _ = self._calculate_trend_metrics(asset_name, spot, count=35)
                 # If the overall 35-min trend is extremely flat (well below the min slope)
                 if abs(long_slope) < max(5.0, min_slope * 0.35):
-                    candles_35 = self._get_candles_safe(asset_name, 60, 35, time.time())
+                    candles_35 = self._get_candles_safe(asset_name, app_config.FOLLOW_CANDLE_TIMEFRAME, 35, time.time())
                     if candles_35 and len(candles_35) >= 30:
                         hist_candles = candles_35[:-3]
                         highs_hist = [float(c.get("max", c.get("high", c.get("close", 0)))) for c in hist_candles]
@@ -2241,7 +2241,7 @@ class DoubleMartingaleBot:
         # This prevents buying at the top of a spike that's about to reverse.
         if self.api and spot and spot > 0:
             try:
-                spike_candles = self._get_candles_safe(asset_name, 60, 10, time.time())
+                spike_candles = self._get_candles_safe(asset_name, app_config.FOLLOW_CANDLE_TIMEFRAME, 10, time.time())
                 if spike_candles and len(spike_candles) >= 6:
                     bodies = []
                     for c in spike_candles:
@@ -2466,7 +2466,7 @@ class DoubleMartingaleBot:
         Returns 'call' for uptrend, 'put' for downtrend.
         """
         try:
-            candles = self._get_candles_safe(asset_name, 60, 20, time.time())
+            candles = self._get_candles_safe(asset_name, app_config.FOLLOW_CANDLE_TIMEFRAME, 20, time.time())
             if not candles or len(candles) < 5:
                 return "call"
             closes = [c["close"] for c in candles if c.get("close")]
@@ -2780,10 +2780,10 @@ class DoubleMartingaleBot:
         """Populate _price_data[60] from REST candle history for turbo mode."""
         target = asset or self.asset
         try:
-            candles = self.api.get_candles(target, 60, 30, time.time())
+            candles = self.api.get_candles(target, app_config.FOLLOW_CANDLE_TIMEFRAME, 30, time.time())
             if candles and len(candles) >= 5:
                 with self._price_lock:
-                    self._price_data[60] = candles
+                    self._price_data[app_config.FOLLOW_CANDLE_TIMEFRAME] = candles
                 logger.info(f"Seeded price feed from {len(candles)} candles for {target}")
                 return True
         except Exception as e:
@@ -2802,7 +2802,7 @@ class DoubleMartingaleBot:
             time.sleep(1)
         return False
 
-    def _has_price_feed(self, period=60):
+    def _has_price_feed(self, period=app_config.FOLLOW_CANDLE_TIMEFRAME):
         with self._price_lock:
             prices = self._price_data.get(period, [])
         if prices:
@@ -3172,7 +3172,7 @@ class DoubleMartingaleBot:
             f"samples={samples}"
         )
 
-    def _get_best_strikes(self, period=60, for_entry_timing=False):
+    def _get_best_strikes(self, period=app_config.FOLLOW_CANDLE_TIMEFRAME, for_entry_timing=False):
         """
         Pick the closest qualifying CALL above spot and PUT below spot so price sits
         between the two strikes. No trend skew — uses live spot only. Walks outward
@@ -3289,7 +3289,7 @@ class DoubleMartingaleBot:
         if not self.api or spot is None or spot <= 0:
             # Try to fetch candles to calculate slope/ema
             try:
-                candles = self.api.get_candles(self.asset, 60, 20, time.time())
+                candles = self.api.get_candles(self.asset, app_config.FOLLOW_CANDLE_TIMEFRAME, 20, time.time())
                 if candles:
                     spot = float(candles[-1].get("close", 0) or 0)
             except Exception:
@@ -3323,7 +3323,7 @@ class DoubleMartingaleBot:
             else:
                 # 2. Volatility ATR and EMA Calculation
                 try:
-                    candles = self.api.get_candles(self.asset, 60, 20, time.time())
+                    candles = self.api.get_candles(self.asset, app_config.FOLLOW_CANDLE_TIMEFRAME, 20, time.time())
                     if candles and len(candles) >= 15:
                         closes = [float(c.get("close", 0)) for c in candles]
                         ema15 = self._calculate_ema(closes, 15)
@@ -3393,7 +3393,7 @@ class DoubleMartingaleBot:
         # far beyond the EMA in the direction we want to trade, the move
         # is likely exhausted and we should NOT chase it.
         try:
-            candles = self.api.get_candles(self.asset, 60, 20, time.time())
+            candles = self.api.get_candles(self.asset, app_config.FOLLOW_CANDLE_TIMEFRAME, 20, time.time())
             if candles and len(candles) >= 15:
                 closes = [float(c.get("close", 0)) for c in candles]
                 opens = [float(c.get("open", 0)) for c in candles]
@@ -4521,7 +4521,7 @@ class DoubleMartingaleBot:
                     if not direction:
                         logger.error("Direction is required for turbo trades")
                         return False, None
-                    result = self.api.buy(amount, asset_name or self.asset, direction.lower(), 1)
+                    result = self.api.buy(amount, asset_name or self.asset, direction.lower(), max(1, int(app_config.FOLLOW_CANDLE_TIMEFRAME / 60)))
                     if result is None:
                         last_err = "buy() returned None (asset may not be open for turbo)"
                         logger.warning(last_err)
@@ -4921,7 +4921,7 @@ class DoubleMartingaleBot:
         window_high = float(ref_spot)
         window_low = float(ref_spot)
         try:
-            candles = self._get_candles_safe(self.asset, 60, 30, time.time())
+            candles = self._get_candles_safe(self.asset, app_config.FOLLOW_CANDLE_TIMEFRAME, 30, time.time())
             if candles:
                 for candle in candles[-30:]:
                     _, high, low, close = self._candle_ohlc(candle)
@@ -4980,7 +4980,7 @@ class DoubleMartingaleBot:
 
         ref_spot = None
         try:
-            candles = self._get_candles_safe(self.asset, 60, 5, time.time())
+            candles = self._get_candles_safe(self.asset, app_config.FOLLOW_CANDLE_TIMEFRAME, 5, time.time())
             if candles:
                 ref_spot = float(candles[-1].get("close", 0) or 0)
         except Exception:
@@ -6285,7 +6285,7 @@ class DoubleMartingaleBot:
                         time.sleep(10)
                         continue
 
-                    if not self._has_price_feed(period=60):
+                    if not self._has_price_feed(period=app_config.FOLLOW_CANDLE_TIMEFRAME):
                         logger.warning("No strike price feed yet; waiting for websocket data.")
                         time.sleep(5)
                         continue
