@@ -1,0 +1,6 @@
+{
+  "version": "1.1.0",
+  "release_date": "2026-06-15",
+  "download_url": "https://bestabot.com/BestaBot.exe",
+  "changelog": "Security improvements, atomic state writes, mid-ladder stall auto-stop, API key auth"
+}

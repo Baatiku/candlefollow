@@ -1,0 +1,3 @@
+- [Plan mode trap](plan-mode-trap.md) — calling enter_plan_mode locks out all writes until user explicitly switches back; never call it when user already said "implement everything"
+- [BestaBot architecture](bestabot-arch.md) — key files, auth pattern, lifecycle lock, license gate pattern
+- [CRM compartmentalised design](crm-design.md) — T0+T1 are the only active tiers; T1 exhaustion triggers CRM not T2; balance-proportional CRM-T1/T2 with 10-win recovery

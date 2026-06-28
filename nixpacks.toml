@@ -1,0 +1,5 @@
+providers = ["python", "node"]
+
+[variables]
+NIXPACKS_NODE_VERSION = "22"
+

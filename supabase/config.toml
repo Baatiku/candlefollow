@@ -1,0 +1,10 @@
+# A string used to distinguish different Supabase projects on the same host. Defaults to the
+# working directory name when running `supabase init`.
+project_id = "bestabot-iqoption"
+
+[api]
+port = 54321
+# An array of domains/IP addresses that are allowed to make requests to the API.
+# Wildcards are not currently supported.
+# e.g., ["http://localhost:3000", "https://my-domain.com"]
+# cors_allowed_origins = ["*"]

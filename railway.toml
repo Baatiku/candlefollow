@@ -1,0 +1,49 @@
+[build]
+builder = "nixpacks"
+buildCommand = "cd frontend && rm -rf node_modules package-lock.json && npm install && npm run build && cd .. && pip install -r requirements.txt"
+
+[build.env]
+RAILPACK_NODE_VERSION = "22"
+
+[deploy]
+startCommand = "uvicorn src.api:app --host 0.0.0.0 --port $PORT"
+healthcheckPath = "/api/health"
+healthcheckTimeout = 300
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10
+
+[deploy.env]
+PYTHONUNBUFFERED = "1"
+# Each new Railway deployment wipes bot_state, trade_log, and pair_learning (see deploy_fresh.py)
+
+[template]
+name = "Besta Bot"
+description = "Automated IQ Option trading bot with Double Martingale strategy"
+tags = ["trading", "bot", "automation"]
+
+[[template.variables]]
+name = "IQ_EMAIL"
+description = "Your IQ Option account email"
+required = true
+secret = true
+
+[[template.variables]]
+name = "IQ_PASSWORD"
+description = "Your IQ Option account password"
+required = true
+secret = true
+
+[[template.variables]]
+name = "IQ_ACCOUNT_TYPE"
+description = "PRACTICE or REAL"
+default = "PRACTICE"
+
+[[template.variables]]
+name = "LICENSE_KEY"
+description = "Your Besta Bot license key (use BESTA-FREE-TRIAL for 72h trial)"
+required = false
+
+[[template.variables]]
+name = "BOT_API_KEY"
+description = "A random secret to protect your bot dashboard (recommended)"
+required = false
