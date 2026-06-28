@@ -55,8 +55,6 @@ function App() {
   const [aiKeyInput, setAiKeyInput] = useState('');
   const [aiKeyVisible, setAiKeyVisible] = useState(false);
   const [aiSaveMsg, setAiSaveMsg] = useState('');
-  const [patternAnalysis, setPatternAnalysis] = useState(null);
-  const [patternLoading, setPatternLoading] = useState(false);
   const [backtest, setBacktest] = useState(null);
   const [backtestLoading, setBacktestLoading] = useState(false);
   const [learnLoading, setLearnLoading] = useState(false);
@@ -82,14 +80,8 @@ function App() {
   const [scheduleSaving, setScheduleSaving] = useState(false);
   const prevRunningRef = useRef(null);
 
-  const [adminTokens, setAdminTokens] = useState(null);
-  const [adminStats, setAdminStats] = useState(null);
-  const [adminLoading, setAdminLoading] = useState(false);
-  const [adminError, setAdminError] = useState('');
-  const [adminSuccess, setAdminSuccess] = useState('');
   const [newTokenDays, setNewTokenDays] = useState(30);
   const [newTokenKey, setNewTokenKey] = useState('');
-  const [showAdmin, setShowAdmin] = useState(false);
   const [copiedToken, setCopiedToken] = useState('');
 
   const [setupStatus, setSetupStatus] = useState(null);
@@ -227,23 +219,6 @@ function App() {
     }
   };
 
-  const loadAdminData = async () => {
-    setAdminLoading(true);
-    setAdminError('');
-    try {
-      const [tokRes, stRes] = await Promise.all([
-        apiFetch('/admin/tokens', {}, 8000),
-        apiFetch('/admin/stats', {}, 8000),
-      ]);
-      if (tokRes.ok) setAdminTokens((await tokRes.json()).tokens || []);
-      else setAdminError((await tokRes.json()).detail || 'Failed to load tokens');
-      if (stRes.ok) setAdminStats(await stRes.json());
-    } catch (err) {
-      setAdminError('Could not reach admin API');
-    } finally {
-      setAdminLoading(false);
-    }
-  };
 
   const createToken = async () => {
     setAdminError(''); setAdminSuccess('');
@@ -322,19 +297,6 @@ function App() {
     }
   };
 
-  const runPatternAnalysis = async () => {
-    setPatternLoading(true);
-    setPatternAnalysis(null);
-    try {
-      const res = await apiFetch('/pattern-analysis?limit=40&days=14', {}, 45000);
-      if (res.ok) setPatternAnalysis(await res.json());
-      else setPatternAnalysis({ error: (await res.json()).detail || 'Analysis failed' });
-    } catch (err) {
-      setPatternAnalysis({ error: err.message || 'Analysis failed' });
-    } finally {
-      setPatternLoading(false);
-    }
-  };
 
   const fetchAiComparison = useCallback(async () => {
     try {
