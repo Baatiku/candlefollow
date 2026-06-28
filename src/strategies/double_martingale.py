@@ -109,24 +109,15 @@ DIGITAL_UNSUPPORTED_ASSETS = {
 # Formula: target=L_cum+P; step1=target/(3×0.85); step2=(target+step1)/(2×0.85); step3=(target+step1+step2)/0.85
 # Tier is determined solely by current balance. On exhaustion: clear debt, reset to step 1.
 STANDARD_BUDGET_TIERS = [
-    [ 1,   3,   9],  # T0: Round 1 main      | max loss=  $13
-    [ 6,  15,  42],  # T1: Round 1 reserve   | max loss=  $63  (3 wins → T0)
-    [ 6,  15,  42],  # T2: Round 2 main      | max loss=   $63  (= T1; 3× faster R1 chip)
-    [24,  60, 168],  # T3: Round 2 reserve   | max loss=  $252  (4× T2; covers T2 loss)
-    [24,  60, 168],  # T4: Round 3 main      | max loss=  $252  (= T3; same stake as R2 rsv)
-    [96, 240, 672],  # T5: Round 3 reserve   | max loss= $1008  (4× T4; covers T4 loss)
+    [1, 2, 4, 8, 16, 32, 64, 128, 256],
 ]
 
 # Balance-proportional tier table.
-# Amounts in each bracket are sized so T0 max-loss ≈ 4–5 % of the bracket floor
-# and T1 max-loss ≈ 35–40 % of the bracket floor, with wide spacing between brackets.
-# Sorted descending — first match wins.
-# Format: (min_balance, T0_ladder, T1_ladder)
 # Single flat 9-step Martingale sequence (no tiers).
 # Each step's win at 85% payout covers all previous losses plus a small profit.
-# Sequence: 1, 2, 4, 10, 21, 46, 100, 218, 474
+# Sequence: 1, 2, 4, 8, 16, 32, 64, 128, 256
 BALANCE_TIER_TABLE = [
-    (0, [1, 2, 4, 10, 21, 46, 100, 218, 474], [1, 2, 4, 10, 21, 46, 100, 218, 474]),
+    (0, [1, 2, 4, 8, 16, 32, 64, 128, 256], [1, 2, 4, 8, 16, 32, 64, 128, 256]),
 ]
 
 EVALUATION_WINDOW_MINUTES = 15
@@ -506,14 +497,7 @@ class DoubleMartingaleBot:
 
     def _update_budget_tiers_for_balance(self, balance=None):
         """
-        Build all 6 tiers (T0–T5) for the bracket that matches the current balance.
-        T0/T1 come from BALANCE_TIER_TABLE; derivation for T2–T5:
-
-          T2 (Round 2 main)    =      T1   — same stake as R1 reserve; chips R1 debt 3× faster
-          T3 (Round 2 reserve) =  4 × T1   — covers T2 max-loss; matches STANDARD_BUDGET_TIERS
-          T4 (Round 3 main)    =  2 × T1   — doubles R2 main; chips R1+R2 debt faster
-          T5 (Round 3 reserve) =  8 × T1   — covers T4 max-loss (4 × T4)
-
+        Build tier list. Currently uses a single 9-step sequence.
         Skipped while on any tier above T0 (mid-round) or in CRM (legacy) to avoid
         changing amounts during an active sequence.
         """
@@ -523,17 +507,13 @@ class DoubleMartingaleBot:
             balance = self.safe_get_balance()
         for min_bal, t0, t1 in BALANCE_TIER_TABLE:
             if balance >= min_bal:
-                t2 = list(t1)                    # Round 2 main  = T1        (= T2)
-                t3 = [x * 4 for x in t1]         # Round 2 rsv   = 4× T1
-                t4 = [x * 4 for x in t1]         # Round 3 main  = T3        (= T4; same as R2 rsv)
-                t5 = [x * 16 for x in t1]        # Round 3 rsv   = 4× T4 = 16× T1
-                new_tiers = [list(t0), list(t1), t2, t3, t4, t5]
+                new_tiers = [list(t0)]
                 if new_tiers != getattr(self, 'budget_tiers', None):
                     self.budget_tiers = new_tiers
                     logger.info(
                         f"📊 Tier bracket updated for balance ${balance:.2f} "
                         f"(≥${min_bal:,}): "
-                        f"T0={t0} T1={t1} | T2={t2} T3={t3} | T4={t4} T5={t5}"
+                        f"T0={t0}"
                     )
                 return
 

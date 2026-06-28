@@ -1588,6 +1588,8 @@ function App() {
 
 
 
+        </div>
+
         {/* Right Sidebar: Settings & Tiers */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', minWidth: 0 }}>
           <div className="glass-panel">
@@ -1981,8 +1983,6 @@ function App() {
           </div>
         </div>
       </div>
-
-
     </div>
   );
 }
