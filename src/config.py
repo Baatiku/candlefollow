@@ -129,10 +129,9 @@ USE_TECHNICAL_INDICATORS = os.getenv("USE_TECHNICAL_INDICATORS", "true").lower()
 TRADING_TIMEZONE = os.getenv("TRADING_TIMEZONE", "Africa/Lagos")
 HOUR_BOUNDARY_BLOCK_MINUTES = 0
 HOUR_BOUNDARY_BLOCK_END_MINUTES = 0
-_default_market_opens = os.getenv("MARKET_OPEN_BLOCKS", "02:00:15:30,09:00:90:90,14:30:15:15,23:00:15:60")
+_default_market_opens = os.getenv("MARKET_OPEN_BLOCKS", "")
 MARKET_OPEN_BLOCKS = [p.strip() for p in _default_market_opens.split(",") if p.strip()]
-# 10:30-12:15 Lagos = European mid-morning data releases (ECB, Eurozone CPI, German PMI at 10 AM UTC)
-_default_blocked = os.getenv("BLOCKED_TIME_WINDOWS", "10:30-12:15")
+_default_blocked = os.getenv("BLOCKED_TIME_WINDOWS", "")
 BLOCKED_TIME_WINDOWS = [w.strip() for w in _default_blocked.split(",") if w.strip()]
 
 # Permanently banned pairs — worst historical performers (BTCUSD-op ~37% win, XAUUSD-OTC ~38% win)
