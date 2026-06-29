@@ -676,7 +676,13 @@ function App() {
       }, ACTION_TIMEOUT_MS);
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        setTierSaveMsg(err.detail || 'Save failed');
+        const detail = err.detail;
+        const msg = typeof detail === 'string'
+          ? detail
+          : Array.isArray(detail)
+            ? detail.map(e => (typeof e === 'string' ? e : e.msg || JSON.stringify(e))).join('; ')
+            : 'Save failed';
+        setTierSaveMsg(msg);
         return;
       }
       setTierSaveMsg('Tiers saved!');
@@ -885,14 +891,13 @@ function App() {
       )}
 
       <header className="header">
-        <div className="header-left"></div>
         <div className="header-title">
-          <Activity size={24} color="#00c853" />
+          <Activity size={20} color="var(--primary)" />
           MKU Bot
         </div>
-        <div className="header-controls" style={{ justifyContent: 'flex-end' }}>
-          <span style={{ fontSize: '0.85rem', color: status.connected ? '#10b981' : '#f59e0b' }}>
-            {status.connecting ? 'Connecting…' : status.connected ? 'Connected' : 'Disconnected'}
+        <div className="header-controls">
+          <span style={{ fontSize: '0.78rem', color: status.connected ? 'var(--success)' : 'var(--warning)', fontWeight: 600 }}>
+            {status.connecting ? 'Connecting…' : status.connected ? '● Connected' : '○ Disconnected'}
           </span>
           <select
             onChange={handleAccountChange}
@@ -908,26 +913,26 @@ function App() {
               ))
             )}
           </select>
+          <div className="balance-badge">
+            <DollarSign size={14} style={{ display: 'inline', verticalAlign: 'text-bottom' }} />
+            {status.balance.toFixed(2)}
+          </div>
           <button
             type="button"
             className={`header-refresh-balance-btn${isRefreshingBalance ? ' spinning' : ''}`}
             onClick={refreshBalance}
             disabled={isRefreshingBalance || !status.connected}
-            title="Refresh balance from IQ Option"
-            aria-label="Refresh balance from IQ Option"
+            title="Refresh balance"
+            aria-label="Refresh balance"
           >
-            <RotateCcw size={16} />
-            Refresh balance
+            <RotateCcw size={14} />
+            Refresh
           </button>
-          <div className="balance-badge">
-            <DollarSign size={16} style={{ display: 'inline', verticalAlign: 'text-bottom' }} />
-            {status.balance.toFixed(2)}
-          </div>
         </div>
       </header>
 
       <div className="main-grid">
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', minWidth: 0 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', minWidth: 0 }}>
           <div className="glass-panel control-section">
             <div className={`status-badge ${status.running && !status.paused ? 'active' : 'idle'}`}>
               {status.running ? (status.paused ? 'PAUSED' : 'RUNNING') : status.connected ? 'STOPPED' : 'DISCONNECTED'}
@@ -937,7 +942,7 @@ function App() {
               onClick={handleStartStop}
               disabled={isToggling || (!status.running && !status.connected)}
             >
-              <Power size={48} />
+              <Power size={40} />
             </button>
             {status.running && (
               <button type="button" onClick={handlePauseResume} disabled={isToggling} style={{ marginTop: '0.75rem' }}>
@@ -1355,94 +1360,116 @@ function App() {
 
           {/* ── Tiers Configuration ── */}
           <div className="glass-panel">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-              <h2 className="panel-title" style={{ margin: 0 }}>Tiers Configuration</h2>
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={initTierEditor}
-              >
-                Load Current Tiers
-              </button>
-            </div>
-            
-            {editTiers ? (
-              <div style={{ overflowX: 'auto', fontSize: '0.85rem' }}>
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>
-                  Edit the step amounts below. A tier is a sequence of bets (a martingale ladder).
-                  Each sub-array is a tier. Usually, you only need one tier.
-                </p>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                  {editTiers.map((tier, tIdx) => (
-                    <div key={tIdx} style={{ background: 'rgba(0,0,0,0.2)', padding: '1rem', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)' }}>
-                      <div style={{ fontWeight: 600, color: '#93c5fd', marginBottom: '0.75rem' }}>Tier {tIdx}</div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-                        {tier.map((amount, sIdx) => (
-                          <div key={sIdx} style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', width: '70px' }}>
-                            <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Step {sIdx + 1}</label>
-                            <input
-                              type="number"
-                              value={amount}
-                              onChange={(e) => {
-                                const newTiers = [...editTiers];
-                                newTiers[tIdx][sIdx] = Number(e.target.value);
-                                setEditTiers(newTiers);
-                              }}
-                              style={{
-                                width: '100%',
-                                padding: '0.35rem',
-                                borderRadius: '4px',
-                                border: '1px solid var(--panel-border)',
-                                background: 'rgba(15,23,42,0.8)',
-                                color: '#fff',
-                                fontSize: '0.85rem',
-                                textAlign: 'center'
-                              }}
-                              min="1"
-                            />
-                          </div>
-                        ))}
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const newTiers = [...editTiers];
-                            newTiers[tIdx].push(1);
-                            setEditTiers(newTiers);
-                          }}
-                          style={{
-                            padding: '0.35rem 0.75rem',
-                            borderRadius: '4px',
-                            background: 'rgba(255,255,255,0.05)',
-                            border: '1px dashed rgba(255,255,255,0.2)',
-                            color: 'var(--text-muted)',
-                            cursor: 'pointer',
-                            marginTop: '1.2rem',
-                            height: 'fit-content'
-                          }}
-                        >
-                          + Step
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', marginTop: '1.5rem' }}>
-                  <button type="button" className="btn-primary" style={{ padding: '0.5rem 1.5rem', background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 600, cursor: 'pointer' }} onClick={saveTiers}>
-                    Save Config
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+              <h2 className="panel-title" style={{ margin: 0 }}>Martingale Ladder</h2>
+              {!editTiers ? (
+                <button type="button" className="btn-secondary" onClick={initTierEditor}>
+                  ✏️ Edit
+                </button>
+              ) : (
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  <button type="button" className="btn-save" style={{ padding: '0.35rem 1rem', fontSize: '0.8rem', minHeight: 'unset' }} onClick={saveTiers}>
+                    Save
                   </button>
-                  <button type="button" style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }} onClick={() => setEditTiers(null)}>
+                  <button type="button" className="btn-secondary" style={{ fontSize: '0.8rem' }} onClick={() => setEditTiers(null)}>
                     Cancel
                   </button>
                   {tierSaveMsg && (
-                    <span style={{ color: tierSaveMsg.includes('failed') || tierSaveMsg.includes('Could not') ? '#f87171' : '#34d399', fontSize: '0.85rem', fontWeight: 600 }}>
+                    <span style={{ color: tierSaveMsg.includes('failed') || tierSaveMsg.includes('Could not') ? 'var(--danger)' : 'var(--success)', fontSize: '0.8rem', fontWeight: 600 }}>
                       {tierSaveMsg}
                     </span>
                   )}
                 </div>
+              )}
+            </div>
+
+            {editTiers ? (
+              /* ── Edit Mode ── */
+              <div style={{ overflowX: 'auto' }}>
+                {editTiers.map((tier, tIdx) => (
+                  <div key={tIdx} style={{ marginBottom: tIdx < editTiers.length - 1 ? '0.75rem' : 0 }}>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--accent-blue)', fontWeight: 600, marginBottom: '0.4rem' }}>Tier {tIdx}</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', alignItems: 'flex-end' }}>
+                      {tier.map((amount, sIdx) => (
+                        <div key={sIdx} style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem', width: '62px' }}>
+                          <label style={{ fontSize: '0.6rem', color: 'var(--text-muted)', textAlign: 'center' }}>S{sIdx + 1}</label>
+                          <input
+                            type="number"
+                            value={amount}
+                            onChange={(e) => {
+                              const newTiers = editTiers.map(t => [...t]);
+                              newTiers[tIdx][sIdx] = Number(e.target.value);
+                              setEditTiers(newTiers);
+                            }}
+                            style={{
+                              width: '100%',
+                              padding: '0.3rem',
+                              borderRadius: '4px',
+                              border: '1px solid var(--panel-border)',
+                              background: 'rgba(17,21,28,0.8)',
+                              color: 'var(--warning)',
+                              fontSize: '0.82rem',
+                              textAlign: 'center',
+                              fontWeight: 600
+                            }}
+                            min="1"
+                          />
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const newTiers = editTiers.map(t => [...t]);
+                          newTiers[tIdx].push(1);
+                          setEditTiers(newTiers);
+                        }}
+                        style={{
+                          padding: '0.3rem 0.5rem',
+                          borderRadius: '4px',
+                          background: 'transparent',
+                          border: '1px dashed rgba(42,50,62,0.8)',
+                          color: 'var(--text-muted)',
+                          cursor: 'pointer',
+                          fontSize: '0.75rem',
+                          height: 'fit-content'
+                        }}
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             ) : (
-              <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                Click "Load Current Tiers" to view or edit the active martingale ladder configuration.
+              /* ── Read-only Table ── */
+              <div style={{ overflowX: 'auto' }}>
+                {tiers.length === 0 ? (
+                  <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textAlign: 'center' }}>No tiers configured</p>
+                ) : (
+                  tiers.map((tier, tIdx) => (
+                    <div key={tIdx} style={{ marginBottom: tIdx < tiers.length - 1 ? '0.5rem' : 0 }}>
+                      {tiers.length > 1 && (
+                        <div style={{ fontSize: '0.68rem', color: 'var(--accent-blue)', fontWeight: 600, marginBottom: '0.3rem' }}>Tier {tIdx}</div>
+                      )}
+                      <table className="tier-table">
+                        <thead>
+                          <tr>
+                            {tier.map((_, sIdx) => (
+                              <th key={sIdx}>Step {sIdx + 1}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            {tier.map((amount, sIdx) => (
+                              <td key={sIdx} className="amount-cell">${amount}</td>
+                            ))}
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  ))
+                )}
               </div>
             )}
           </div>
