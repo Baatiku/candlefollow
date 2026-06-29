@@ -6393,14 +6393,10 @@ class DoubleMartingaleBot:
                     entry_quality = self._compute_entry_quality(
                         _entry_bot_conf, _entry_combined
                     )
-                    score_ok, score_reason = self._check_step_score_escalation(
-                        entry_quality
-                    )
-                    if not score_ok:
-                        self._step_score_skip_streak += 1
-                        logger.warning(f"Step score gate: {score_reason}")
-                        self._skip_to_next_entry_window(score_reason)
-                        continue
+                    # Bypass Step Score gate for strict candle follow
+                    score_ok = True
+                    score_reason = "Bypassed for strict candle follow"
+
                     self._pending_entry_quality = entry_quality
                     _eval_dir = (
                         target_dir
