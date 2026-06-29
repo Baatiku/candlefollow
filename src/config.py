@@ -14,6 +14,8 @@ RANGING_LOOKBACK_CANDLES = 6   # How many candles to look back for ranging filte
 RANGING_MAX_ALTERNATIONS = 3   # Max color changes allowed in the lookback window
 RANGING_MIN_ADX = float(os.getenv("RANGING_MIN_ADX", "20.0"))
 
+SNIPER_ENTRY_ENABLED = False
+
 
 if not IQ_EMAIL or not IQ_PASSWORD:
     import logging

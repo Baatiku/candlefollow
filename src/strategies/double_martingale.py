@@ -2070,10 +2070,11 @@ class DoubleMartingaleBot:
                 result["reason"] = "Not enough 5m candles"
                 return result
                 
-            # We include the current forming candle because this is called just seconds before it closes
-            closed_candles = candles
+            # The last candle in the array from IQ Option is the currently forming candle.
+            # We strictly want the direction of the LAST FULLY CLOSED 5-minute candle.
+            closed_candles = candles[:-1] if len(candles) > 1 else candles
             if not closed_candles:
-                result["reason"] = "No candles"
+                result["reason"] = "No closed candles"
                 return result
                 
             # Ranging filter: ADX
@@ -4592,8 +4593,10 @@ class DoubleMartingaleBot:
                     if not self.running:
                         logger.info(f"Stop requested — abandoning result wait for order {order_id_int}")
                         return _TIMEOUT_SENTINEL
-                    if time.time() - start_t > 70:
-                        logger.warning(f"Timeout waiting for turbo result on order {order_id_int}")
+                    
+                    timeout_limit = getattr(app_config, "FOLLOW_CANDLE_TIMEFRAME", 60) + 70
+                    if time.time() - start_t > timeout_limit:
+                        logger.warning(f"Timeout waiting for turbo result on order {order_id_int} after {timeout_limit}s")
                         return _TIMEOUT_SENTINEL
                         
                     order_info = self.api.get_async_order(order_id_int)
@@ -6317,7 +6320,7 @@ class DoubleMartingaleBot:
                         if self.trading_mode == "turbo":
                             logger.info(
                                 f"TURBO BET ({target_dir.upper()}): "
-                                f"profit={leg_info['profit_pct']:.1f}% (30s binary)"
+                                f"profit={leg_info['profit_pct']:.1f}% (Turbo Option)"
                             )
                         else:
                             strike_val = leg_info.get('strike')
