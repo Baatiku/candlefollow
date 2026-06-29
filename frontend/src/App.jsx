@@ -798,9 +798,9 @@ function App() {
     return (
       <div style={overlayStyle}>
         <div style={cardStyle}>
-          <h2 style={{ color: '#e2e8f0', margin: '0 0 0.5rem', fontSize: '1.5rem', fontWeight: 700 }}>
-            Welcome to Besta Bot 👋
-          </h2>
+          <h1 style={{ fontSize: '1.75rem', fontWeight: 800, marginBottom: '0.75rem' }}>
+            Welcome to MKU Bot 👋
+          </h1>
           <p style={{ color: '#94a3b8', fontSize: '0.9rem', marginBottom: '1.5rem' }}>
             {setupStatus?.is_railway
               ? 'Running on Railway. Set your credentials via Railway Variables and redeploy.'
@@ -887,8 +887,8 @@ function App() {
       <header className="header">
         <div className="header-left"></div>
         <div className="header-title">
-          <Activity size={26} color="var(--primary)" />
-          BestaBot
+          <Activity size={24} color="#00c853" />
+          MKU Bot
         </div>
         <div className="header-controls" style={{ justifyContent: 'flex-end' }}>
           <span style={{ fontSize: '0.85rem', color: status.connected ? '#10b981' : '#f59e0b' }}>
@@ -1351,6 +1351,100 @@ function App() {
             <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
               Click any trade row to expand its full reasoning — slope, ER, guards, direction logic, and AI gate decision.
             </p>
+          </div>
+
+          {/* ── Tiers Configuration ── */}
+          <div className="glass-panel">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <h2 className="panel-title" style={{ margin: 0 }}>Tiers Configuration</h2>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={initTierEditor}
+              >
+                Load Current Tiers
+              </button>
+            </div>
+            
+            {editTiers ? (
+              <div style={{ overflowX: 'auto', fontSize: '0.85rem' }}>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>
+                  Edit the step amounts below. A tier is a sequence of bets (a martingale ladder).
+                  Each sub-array is a tier. Usually, you only need one tier.
+                </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                  {editTiers.map((tier, tIdx) => (
+                    <div key={tIdx} style={{ background: 'rgba(0,0,0,0.2)', padding: '1rem', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                      <div style={{ fontWeight: 600, color: '#93c5fd', marginBottom: '0.75rem' }}>Tier {tIdx}</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                        {tier.map((amount, sIdx) => (
+                          <div key={sIdx} style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', width: '70px' }}>
+                            <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Step {sIdx + 1}</label>
+                            <input
+                              type="number"
+                              value={amount}
+                              onChange={(e) => {
+                                const newTiers = [...editTiers];
+                                newTiers[tIdx][sIdx] = Number(e.target.value);
+                                setEditTiers(newTiers);
+                              }}
+                              style={{
+                                width: '100%',
+                                padding: '0.35rem',
+                                borderRadius: '4px',
+                                border: '1px solid var(--panel-border)',
+                                background: 'rgba(15,23,42,0.8)',
+                                color: '#fff',
+                                fontSize: '0.85rem',
+                                textAlign: 'center'
+                              }}
+                              min="1"
+                            />
+                          </div>
+                        ))}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const newTiers = [...editTiers];
+                            newTiers[tIdx].push(1);
+                            setEditTiers(newTiers);
+                          }}
+                          style={{
+                            padding: '0.35rem 0.75rem',
+                            borderRadius: '4px',
+                            background: 'rgba(255,255,255,0.05)',
+                            border: '1px dashed rgba(255,255,255,0.2)',
+                            color: 'var(--text-muted)',
+                            cursor: 'pointer',
+                            marginTop: '1.2rem',
+                            height: 'fit-content'
+                          }}
+                        >
+                          + Step
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', marginTop: '1.5rem' }}>
+                  <button type="button" className="btn-primary" style={{ padding: '0.5rem 1.5rem', background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 600, cursor: 'pointer' }} onClick={saveTiers}>
+                    Save Config
+                  </button>
+                  <button type="button" style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }} onClick={() => setEditTiers(null)}>
+                    Cancel
+                  </button>
+                  {tierSaveMsg && (
+                    <span style={{ color: tierSaveMsg.includes('failed') || tierSaveMsg.includes('Could not') ? '#f87171' : '#34d399', fontSize: '0.85rem', fontWeight: 600 }}>
+                      {tierSaveMsg}
+                    </span>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                Click "Load Current Tiers" to view or edit the active martingale ladder configuration.
+              </div>
+            )}
           </div>
 
 
