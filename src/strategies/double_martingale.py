@@ -1639,8 +1639,8 @@ class DoubleMartingaleBot:
         return self.purchase_deadline_sec
 
     def _too_late_to_place(self):
-        # For 5-minute strategy, deadline applies to seconds_past_5_minutes
-        return self._seconds_past_5_minutes() > self._placement_deadline_second()
+        # For dynamic timeframe, deadline applies to seconds_past_candle
+        return self._seconds_past_candle() > self._placement_deadline_second()
 
     def _handle_penalty_box_block(self):
         until = self.asset_penalty_box.get(self.asset)
@@ -4841,11 +4841,13 @@ class DoubleMartingaleBot:
     def _seconds_past_minute(self):
         return self._server_timestamp() % 60
 
-    def _seconds_past_5_minutes(self):
-        # Time since the last 5-minute boundary
+    def _seconds_past_candle(self):
+        # Time since the start of the current candle
         ts = self._server_timestamp()
+        tf = int(getattr(app_config, "FOLLOW_CANDLE_TIMEFRAME", 60))
+        # Add offset to align with IQOption candle open boundaries
         dt = datetime.datetime.fromtimestamp(ts)
-        return (dt.minute % 5) * 60 + dt.second
+        return (dt.hour * 3600 + dt.minute * 60 + dt.second) % tf
 
     def _expiry_from_symbol(self, symbol):
         date_str = symbol.split("A")[1][:8]
@@ -4873,29 +4875,30 @@ class DoubleMartingaleBot:
         )
 
     def _inside_entry_window(self):
-        sec = self._seconds_past_5_minutes()
+        sec = self._seconds_past_candle()
         return self.entry_window_start <= sec <= self.entry_window_end
 
     def _past_entry_hard_abort(self):
-        return self._seconds_past_5_minutes() >= self.entry_hard_abort_sec
+        return self._seconds_past_candle() >= self.entry_hard_abort_sec
 
     def _wait_for_next_entry(self):
-        # For 5-minute candle strategy, wait for the start of a 5-minute candle
+        # Wait for the start of the next candle
         start = self.entry_window_start
         end = self.entry_window_end
-        seconds_past = self._seconds_past_5_minutes()
+        seconds_past = self._seconds_past_candle()
+        tf = int(getattr(app_config, "FOLLOW_CANDLE_TIMEFRAME", 60))
 
         if seconds_past < start:
             wait = start - seconds_past
         elif seconds_past > end:
-            wait = (300 - seconds_past) + start
+            wait = (tf - seconds_past) + start
         else:
             wait = 0
 
         if wait > 0:
             logger.info(
-                f"⏳ Waiting {wait:.1f}s for 5m entry window "
-                f"(now {seconds_past}s past 5m boundary)..."
+                f"⏳ Waiting {wait:.1f}s for entry window "
+                f"(now {seconds_past}s past candle boundary)..."
             )
             end_t = time.time() + wait
             while time.time() < end_t and self.running:
@@ -6773,17 +6776,19 @@ class DoubleMartingaleBot:
                                 self.session_round_count = 0
                                 self.cumulative_debt = 0.0
                                 self._reset_ladder_tracking()
+                                tf = int(getattr(app_config, "FOLLOW_CANDLE_TIMEFRAME", 60))
+                                pause_time = tf * 5
                                 logger.warning(
                                     f"Sequential LOSE all steps → wrapping to step 1 "
                                     f"(consecutive full-ladder losses: {self._consecutive_full_ladder_losses})"
-                                    f" — 5-minute cooldown before next round."
+                                    f" — {pause_time}-second cooldown before next round."
                                 )
-                                # Always pause 5 minutes after every full 3-step loss
-                                time.sleep(300)
+                                # Always pause 5 candles after every full step loss
+                                time.sleep(pause_time)
                                 _loss_limit = self._consec_ladder_loss_limit
                                 _pause_sec = self._consec_ladder_loss_pause_sec
                                 if _loss_limit > 0 and self._consecutive_full_ladder_losses >= _loss_limit:
-                                    _extra_sec = max(0.0, _pause_sec - 300)
+                                    _extra_sec = max(0.0, _pause_sec - pause_time)
                                     if _extra_sec > 0:
                                         _extra_min = _extra_sec / 60
                                         logger.warning(

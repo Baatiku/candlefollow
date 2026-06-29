@@ -6,7 +6,7 @@ load_dotenv()
 IQ_EMAIL = os.getenv("IQ_EMAIL", "")
 IQ_PASSWORD = os.getenv("IQ_PASSWORD", "")
 IQ_ACCOUNT_TYPE = os.getenv("IQ_ACCOUNT_TYPE", "PRACTICE")
-TRADING_MODE = os.getenv("TRADING_MODE", "binary") # Switched to binary for 5m expiries
+TRADING_MODE = os.getenv("TRADING_MODE", "turbo") # Switched back to turbo for 1m expiries
 
 # --- Follow Candle 5M Strategy Config ---
 FOLLOW_CANDLE_TIMEFRAME = 60   # 1 minute
