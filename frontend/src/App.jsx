@@ -886,8 +886,8 @@ function App() {
 
       <header className="header">
         <div className="header-title">
-          <Activity size={26} color="#3b82f6" />
-          IQ Martingale Bot
+          <Activity size={26} color="var(--primary)" />
+          BestaBot
         </div>
         <div className="header-controls">
           <span style={{ fontSize: '0.85rem', color: status.connected ? '#10b981' : '#f59e0b' }}>
