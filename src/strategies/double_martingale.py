@@ -58,14 +58,14 @@ STANDARD_BUDGET_TIERS = [
 ]
 
 # Balance-proportional tier table (highest matching min_balance wins).
-# Ranges: $1–$699 | $700–$1,999 | $2k–$4,999 | $5k–$24,999 | $25k–$49,999 | $50k+
+# Ranges: $1–$299 | $300–$499 | $500–$1,999 | $2k–$9,999 | $10k–$24,999 | $25k+
 BALANCE_TIER_TABLE = [
-    (1, [1, 3, 9, 25, 80, 180, 402], [1, 3, 9, 25, 80, 180, 402]),
-    (700, [3, 9, 27, 75, 240, 540, 1206], [3, 9, 27, 75, 240, 540, 1206]),
-    (2000, [9, 27, 81, 225, 720, 1620, 3618], [9, 27, 81, 225, 720, 1620, 3618]),
-    (5000, [20, 60, 180, 500, 1600, 3600, 8040], [20, 60, 180, 500, 1600, 3600, 8040]),
-    (25000, [45, 135, 405, 1125, 3600, 8100, 18090], [45, 135, 405, 1125, 3600, 8100, 18090]),
-    (50000, [100, 300, 900, 2500, 8000, 18000, 40200], [100, 300, 900, 2500, 8000, 18000, 40200]),
+    (1,     [1, 3, 9, 25, 80, 180, 402],               [1, 3, 9, 25, 80, 180, 402]),
+    (300,   [3, 9, 27, 75, 240, 540, 1206],             [3, 9, 27, 75, 240, 540, 1206]),
+    (500,   [9, 27, 81, 225, 720, 1620, 3618],          [9, 27, 81, 225, 720, 1620, 3618]),
+    (2000,  [20, 60, 180, 500, 1600, 3600, 8040],       [20, 60, 180, 500, 1600, 3600, 8040]),
+    (10000, [45, 135, 405, 1125, 3600, 8100, 18090],    [45, 135, 405, 1125, 3600, 8100, 18090]),
+    (25000, [100, 300, 900, 2500, 8000, 18000, 40200],  [100, 300, 900, 2500, 8000, 18000, 40200]),
 ]
 
 # Human step 5 → 0-based ladder index 4. Win/loss here triggers pair rotation.
@@ -2664,7 +2664,9 @@ class DoubleMartingaleBot:
                 )
 
         # STRICT CANDLE FOLLOW: Never switch pairs mid-ladder.
-        if self._in_active_ladder() and reason != "trading start":
+        # Exception: "step 4 rotation retry" must always switch regardless.
+        _mid_ladder_bypass = {"trading start", "step 4 rotation retry"}
+        if self._in_active_ladder() and reason not in _mid_ladder_bypass:
             logger.info(f"🔒 Locked to {self.asset} for the entire tier (step {self.session_round_count+1}).")
             return
 
@@ -2718,7 +2720,7 @@ class DoubleMartingaleBot:
         logger.info(self.last_asset_selection_note)
 
     def _switch_to_next_tradeable_pair(self, reason, relaxed=False):
-        if self._in_active_ladder():
+        if self._in_active_ladder() and reason != "step 4 rotation retry":
             logger.info(
                 f"Mid-ladder lock — cannot switch from {self.asset} "
                 f"(step {self.session_round_count + 1}); reason was: {reason}"
@@ -5955,8 +5957,13 @@ class DoubleMartingaleBot:
                         self._last_ladder_prep_key = None
                         self.last_trend_direction = None
                         old_asset = self.asset
-                        if self.auto_select_asset:
-                            self._apply_auto_asset_selection(reason="step 4 rotation retry")
+                        self._apply_auto_asset_selection(reason="step 4 rotation retry")
+                        if self.asset == old_asset:
+                            # Fallback when auto-select disabled or no better pair scored —
+                            # force a direct scan to escape the penalised pair.
+                            self._switch_to_next_tradeable_pair(
+                                "step 4 rotation retry", relaxed=True
+                            )
                         logger.warning(
                             f"Step 4 lost on {old_asset} — switching to {self.asset} "
                             f"to replay step 4 before advancing to step 5."

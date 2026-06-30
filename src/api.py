@@ -509,6 +509,24 @@ def _normalize_budget_tiers_output(tiers):
     return [list(t) for t in tiers]
 
 
+class BracketConfigUpdate(BaseModel):
+    budget_tiers: List[Any]
+    auto_bracket_enabled: bool = True
+
+    model_config = ConfigDict(extra="ignore")
+
+    @field_validator("budget_tiers", mode="before")
+    @classmethod
+    def coerce_budget_tiers(cls, v):
+        if v is None:
+            raise ValueError("budget_tiers is required")
+        if not isinstance(v, list) or len(v) == 0:
+            raise ValueError("budget_tiers must be a non-empty list")
+        if not isinstance(v[0], (list, tuple)):
+            return [list(v)]
+        return v
+
+
 @app.post("/api/bracket-config", dependencies=[Depends(_require_api_key)])
 def update_bracket_config(body: "BracketConfigUpdate"):
     """Save martingale bracket / ladder (also accepts flat step arrays)."""
@@ -826,24 +844,6 @@ def get_accounts():
 class AccountSwitch(BaseModel):
     account_type: str
     balance_id: Optional[int] = None
-
-
-class BracketConfigUpdate(BaseModel):
-    budget_tiers: List[Any]
-    auto_bracket_enabled: bool = True
-
-    model_config = ConfigDict(extra="ignore")
-
-    @field_validator("budget_tiers", mode="before")
-    @classmethod
-    def coerce_budget_tiers(cls, v):
-        if v is None:
-            raise ValueError("budget_tiers is required")
-        if not isinstance(v, list) or len(v) == 0:
-            raise ValueError("budget_tiers must be a non-empty list")
-        if not isinstance(v[0], (list, tuple)):
-            return [list(v)]
-        return v
 
 
 class ConfigUpdate(BaseModel):
