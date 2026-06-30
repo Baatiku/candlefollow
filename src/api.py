@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator, ConfigDict
 import threading
 import time
 from datetime import datetime
@@ -121,24 +121,36 @@ def _wait_for_trading_thread_stop(timeout=120.0):
     return False
 
 
+def _abandon_stuck_thread():
+    """Release lifecycle lock when a stopped thread fails to exit (daemon will die on redeploy)."""
+    global bot_thread
+    if bot_thread is not None and bot_thread.is_alive() and not bot.running:
+        logger.warning(
+            "Trading thread still alive after stop — releasing reference so Start can proceed"
+        )
+        bot_thread = None
+        return True
+    return False
+
+
 def _start_trading_thread():
     global bot_thread
     with _lifecycle_lock:
-        if _thread_alive():
-            if not bot.running:
-                logger.info("Old trading thread still winding down — waiting up to 30s...")
-            else:
-                logger.warning("Refusing new trading thread — previous loop still running")
-                return False
+        if _thread_alive() and bot.running:
+            logger.warning("Refusing new trading thread — previous loop still running")
+            return False
 
-    if not bot.running:
-        deadline = time.time() + 30
+    if _thread_alive() and not bot.running:
+        logger.info("Old trading thread still winding down — waiting up to 8s...")
+        deadline = time.time() + 8
         while time.time() < deadline:
             if not _thread_alive():
                 break
-            time.sleep(0.5)
+            time.sleep(0.25)
         if _thread_alive():
-            logger.error("Old trading thread did not exit in 30s — cannot start new one")
+            _abandon_stuck_thread()
+        if _thread_alive():
+            logger.error("Old trading thread did not exit — cannot start new one")
             return False
 
     with _lifecycle_lock:
@@ -502,7 +514,8 @@ def run_simulation(body: SimulateRequest):
 
 @app.get("/api/config")
 def get_config():
-    tiers = bot.budget_tiers if getattr(bot, "budget_tiers", None) else STANDARD_BUDGET_TIERS
+    raw_tiers = bot.budget_tiers if getattr(bot, "budget_tiers", None) else STANDARD_BUDGET_TIERS
+    tiers = _normalize_budget_tiers_output(raw_tiers)
     return {
         "asset": bot.asset,
         "budget_tiers": tiers,
@@ -570,7 +583,7 @@ def get_trade_history_analytics(limit: int = 5000):
 async def get_ai_opt_logs():
     log_path = os.path.join(os.path.dirname(__file__), "..", "data", "ai_opt_log.json")
     if not os.path.exists(log_path):
-        raise HTTPException(status_code=404, detail="No AI optimization logs available yet.")
+        return []
     try:
         with open(log_path, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -582,7 +595,7 @@ async def get_ai_opt_logs():
 async def get_ai_evaluator_logs():
     log_path = os.path.join(os.path.dirname(__file__), "..", "data", "ai_evaluator_log.json")
     if not os.path.exists(log_path):
-        raise HTTPException(status_code=404, detail="No AI evaluator logs available yet.")
+        return []
     try:
         with open(log_path, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -600,9 +613,76 @@ async def trigger_ai_opt():
     return {"status": "success", "message": "Multi-Agent Optimization Pipeline triggered in the background."}
 
 
+def _normalize_budget_tiers(raw):
+    """
+    Accept nested [[s1,s2,...]] or a flat [s1,s2,...] ladder (single tier).
+    Raises HTTPException(400) when the payload cannot be coerced.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or len(raw) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="budget_tiers must be a non-empty list of step amounts",
+        )
+    tiers = [raw] if not isinstance(raw[0], (list, tuple)) else list(raw)
+    cleaned = []
+    for tier in tiers:
+        if not isinstance(tier, (list, tuple)) or len(tier) < 3:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Each tier must contain at least 3 step amounts "
+                    f"(got {tier!r}). Use [[1,3,9,...]] not [1,3,9,...]."
+                ),
+            )
+        try:
+            cleaned.append([max(1.0, float(v)) for v in tier])
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid step amount in tier {tier!r}",
+            )
+    return cleaned
+
+
+def _normalize_budget_tiers_output(tiers):
+    """Ensure API responses always use [[step amounts...]]."""
+    if not tiers:
+        return [list(STANDARD_BUDGET_TIERS[0])]
+    if isinstance(tiers, list) and tiers and not isinstance(tiers[0], (list, tuple)):
+        return [list(tiers)]
+    return [list(t) for t in tiers]
+
+
+@app.post("/api/bracket-config", dependencies=[Depends(_require_api_key)])
+def update_bracket_config(body: "BracketConfigUpdate"):
+    """Save martingale bracket / ladder (also accepts flat step arrays)."""
+    cleaned = _normalize_budget_tiers(body.budget_tiers)
+    payload = {
+        "budget_tiers": cleaned,
+        "auto_bracket_enabled": body.auto_bracket_enabled,
+    }
+    with _lifecycle_lock:
+        if bot.running:
+            raise HTTPException(
+                status_code=409,
+                detail="Stop the bot before changing bracket tiers.",
+            )
+        bot.update_config(payload)
+    bot.persist_state("bracket config updated")
+    return {
+        "message": "Bracket configuration saved",
+        "budget_tiers": _normalize_budget_tiers_output(bot.budget_tiers),
+        "auto_bracket_enabled": getattr(bot, "auto_bracket_enabled", True),
+    }
+
+
 @app.post("/api/config", dependencies=[Depends(_require_api_key)])
 def update_config(config: "ConfigUpdate"):
     config_dict = config.model_dump(exclude_unset=True)
+    if "budget_tiers" in config_dict:
+        config_dict["budget_tiers"] = _normalize_budget_tiers(config_dict["budget_tiers"])
     with _lifecycle_lock:
         bot.update_config(config_dict)
     bot.persist_state("config updated")
@@ -650,6 +730,11 @@ def start_bot(body: StartRequest = StartRequest()):
             detail="Not connected to IQ Option. Click Reconnect, wait for balances to load, then Start.",
         )
     if not _start_trading_thread():
+        if _thread_alive() and not bot.running:
+            raise HTTPException(
+                status_code=409,
+                detail="Previous trading thread still stopping — wait a few seconds and try again",
+            )
         raise HTTPException(status_code=400, detail="Bot is already running or session not ready")
 
     return {
@@ -674,8 +759,20 @@ def stop_bot():
             bot.stop()
         else:
             _sync_running_flag()
+
+    def _join_stopped_thread():
+        if not was_alive:
+            return
+        if not _wait_for_trading_thread_stop(timeout=45.0):
+            _abandon_stuck_thread()
+
     if was_alive:
-        _wait_for_trading_thread_stop(timeout=120.0)
+        threading.Thread(
+            target=_join_stopped_thread,
+            daemon=True,
+            name="trading-thread-join",
+        ).start()
+
     return {
         "message": "Stop signal sent" if was_alive else "Bot was already stopped",
         "running": False,
@@ -877,7 +974,27 @@ class AccountSwitch(BaseModel):
     balance_id: Optional[int] = None
 
 
+class BracketConfigUpdate(BaseModel):
+    budget_tiers: List[Any]
+    auto_bracket_enabled: bool = True
+
+    model_config = ConfigDict(extra="ignore")
+
+    @field_validator("budget_tiers", mode="before")
+    @classmethod
+    def coerce_budget_tiers(cls, v):
+        if v is None:
+            raise ValueError("budget_tiers is required")
+        if not isinstance(v, list) or len(v) == 0:
+            raise ValueError("budget_tiers must be a non-empty list")
+        if not isinstance(v[0], (list, tuple)):
+            return [list(v)]
+        return v
+
+
 class ConfigUpdate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     account_type: Optional[str] = None
     asset: Optional[str] = None
     avoid_markets: Optional[List[str]] = None
@@ -886,7 +1003,7 @@ class ConfigUpdate(BaseModel):
     simulation_mode: Optional[bool] = None
     sim_win_rate: Optional[float] = None
     strategy_mode: Optional[str] = None
-    budget_tiers: Optional[List[List[float]]] = None
+    budget_tiers: Optional[List[Any]] = None
     auto_bracket_enabled: Optional[bool] = None
     ai_shadow_mode: Optional[bool] = None
     blocked_hours: Optional[List[int]] = None
@@ -905,6 +1022,17 @@ class ConfigUpdate(BaseModel):
     override_blocked_windows: Optional[bool] = None
     gemini_api_keys: Optional[str] = None
     ai_enabled: Optional[bool] = None
+
+    @field_validator("budget_tiers", mode="before")
+    @classmethod
+    def coerce_budget_tiers(cls, v):
+        if v is None:
+            return v
+        if not isinstance(v, list) or len(v) == 0:
+            raise ValueError("budget_tiers must be a non-empty list")
+        if not isinstance(v[0], (list, tuple)):
+            return [list(v)]
+        return v
 
 
 @app.post("/api/account", dependencies=[Depends(_require_api_key)])

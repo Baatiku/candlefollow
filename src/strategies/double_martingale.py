@@ -913,6 +913,17 @@ class DoubleMartingaleBot:
             time.sleep(0.2)
         return False
 
+    def _interruptible_sleep(self, seconds, step=0.25):
+        """Sleep in small steps so stop requests exit the trading loop quickly."""
+        if seconds <= 0:
+            return not self.running
+        end_t = time.time() + float(seconds)
+        while time.time() < end_t:
+            if not self.running:
+                return False
+            time.sleep(min(step, end_t - time.time()))
+        return True
+
     def _read_balance_from_profile(self):
         if not self.api or not self.api.api:
             return None
@@ -2475,6 +2486,8 @@ class DoubleMartingaleBot:
 
         scores = {}
         for name in candidates:
+            if not self.running:
+                return self.asset, scores
             result = self._score_asset_movement(name)
             scores[name] = result if result else {
                 "score": 0.0, "straddle_score": 0.0, "tradeable": False,
@@ -2571,7 +2584,8 @@ class DoubleMartingaleBot:
             )
             self._multi_asset_states.clear()
             self._multi_asset_session_profit = 0.0
-            time.sleep(self.multi_asset_global_pause_sec)
+            if not self._interruptible_sleep(self.multi_asset_global_pause_sec):
+                return False
             return False
 
         # ── Phase 1: scan & rank ──────────────────────────────────────────────
@@ -2754,6 +2768,8 @@ class DoubleMartingaleBot:
         )
         scores = {}
         for name in candidates:
+            if not self.running:
+                return self.asset, scores
             result = self._score_asset_movement(name)
             if result:
                 scores[name] = result
@@ -2860,6 +2876,8 @@ class DoubleMartingaleBot:
 
     def _wait_for_price_data(self, timeout=30):
         for _ in range(timeout):
+            if not self.running:
+                return False
             with self._price_lock:
                 if 60 in self._price_data:
                     return True
@@ -2867,7 +2885,8 @@ class DoubleMartingaleBot:
             if self.trading_mode == "turbo":
                 if self._seed_price_data_from_candles():
                     return True
-            time.sleep(1)
+            if not self._interruptible_sleep(1):
+                return False
         return False
 
     def _has_price_feed(self, period=app_config.FOLLOW_CANDLE_TIMEFRAME):
@@ -3049,7 +3068,8 @@ class DoubleMartingaleBot:
 
         if streak >= PAIR_UNTRADEABLE_SKIP_STREAK:
             self._abandon_untradeable_pair(reason)
-            time.sleep(5)
+            if not self._interruptible_sleep(5):
+                return
             return
 
         # Mid-tier (step 2+): never switch — stick to the asset until tier exhausts.
@@ -3064,7 +3084,8 @@ class DoubleMartingaleBot:
                 f"{self.asset}: {reason}. Change pair or enable auto-select."
             )
             logger.warning(self.last_asset_selection_note)
-            time.sleep(90)
+            if not self._interruptible_sleep(90):
+                return
             return
 
         self._skip_to_next_entry_window(reason)
@@ -6113,13 +6134,20 @@ class DoubleMartingaleBot:
         got_prices = feed_ready
         wait_secs = 15 if feed_ready else 90
         for i in range(wait_secs):
+            if not self.running:
+                self.last_stop_reason = "Stopped during startup"
+                self.persist_state(self.last_stop_reason)
+                return
             with self._price_lock:
                 if 60 in self._price_data:
                     got_prices = True
                     break
             if i > 0 and i % 15 == 0:
                 logger.info(f"Still waiting for price data... ({i}s)")
-            time.sleep(1)
+            if not self._interruptible_sleep(1):
+                self.last_stop_reason = "Stopped during startup"
+                self.persist_state(self.last_stop_reason)
+                return
 
         if not got_prices:
             if self.auto_select_asset:
@@ -6155,13 +6183,15 @@ class DoubleMartingaleBot:
             while self.running:
                 try:
                     while self.paused and self.running:
-                        time.sleep(2)
+                        if not self._interruptible_sleep(2):
+                            break
 
                     if not self.running:
                         break
 
                     if not self._ensure_api_connection():
-                        time.sleep(10)
+                        if not self._interruptible_sleep(10):
+                            break
                         continue
 
                     self._maybe_roll_evaluation_window()
@@ -6178,7 +6208,8 @@ class DoubleMartingaleBot:
                         )
                         self.last_asset_selection_note = "Blocked time window"
                         self.persist_state()
-                        time.sleep(30)
+                        if not self._interruptible_sleep(30):
+                            break
                         self._ensure_api_connection()
                         continue
 
@@ -6187,7 +6218,8 @@ class DoubleMartingaleBot:
                         logger.info(f"🚫 {_utc_ban_reason} — no new rounds")
                         self.last_asset_selection_note = _utc_ban_reason
                         self.persist_state()
-                        time.sleep(30)
+                        if not self._interruptible_sleep(30):
+                            break
                         self._ensure_api_connection()
                         continue
 
@@ -6198,7 +6230,8 @@ class DoubleMartingaleBot:
                         if self.auto_select_asset:
                             self._apply_auto_asset_selection(reason=_soft_ban_reason)
                         else:
-                            time.sleep(30)
+                            if not self._interruptible_sleep(30):
+                                break
                         continue
 
                     if self._is_legacy_blocked_hour():
@@ -6208,7 +6241,8 @@ class DoubleMartingaleBot:
                         )
                         self.last_asset_selection_note = f"Blocked hour ({current_hour}:00)"
                         self.persist_state()
-                        time.sleep(60)
+                        if not self._interruptible_sleep(60):
+                            break
                         self._ensure_api_connection()
                         continue
 
@@ -6298,7 +6332,9 @@ class DoubleMartingaleBot:
                             self._apply_auto_asset_selection(reason="recovery debt chipping")
                         self._on_ladder_step_start()
                         if not self._ensure_tradeable_market():
-                            time.sleep(90 if not self.auto_select_asset else 30)
+                            wait_sec = 90 if not self.auto_select_asset else 30
+                            if not self._interruptible_sleep(wait_sec):
+                                break
                             continue
 
                         now_utc = datetime.datetime.utcnow()
@@ -6306,7 +6342,8 @@ class DoubleMartingaleBot:
                             logger.info(
                                 f"News blackout hour UTC {now_utc.hour:02d}:00 — skipping new round"
                             )
-                            time.sleep(30)
+                            if not self._interruptible_sleep(30):
+                                break
                             continue
 
                     bet_info = self._compute_round_bet(balance=current_balance)
@@ -6317,7 +6354,8 @@ class DoubleMartingaleBot:
                             f"Balance ${current_balance:.2f} below minimum affordable "
                             f"round ${required_balance:.2f} — waiting to retry."
                         )
-                        time.sleep(30)
+                        if not self._interruptible_sleep(30):
+                            break
                         continue
 
                     self.current_bet = bet_info["amount"]
@@ -6340,12 +6378,14 @@ class DoubleMartingaleBot:
 
                     if self.asset in self.avoid_markets:
                         logger.warning(f"Asset {self.asset} is in avoid_markets list. Pausing.")
-                        time.sleep(10)
+                        if not self._interruptible_sleep(10):
+                            break
                         continue
 
                     if not self._has_price_feed(period=app_config.FOLLOW_CANDLE_TIMEFRAME):
                         logger.warning("No strike price feed yet; waiting for websocket data.")
-                        time.sleep(5)
+                        if not self._interruptible_sleep(5):
+                            break
                         continue
 
                     self._wait_for_next_entry()
@@ -6503,7 +6543,8 @@ class DoubleMartingaleBot:
                             logger.warning(
                                 "Round already in flight — skipping duplicate placement"
                             )
-                            time.sleep(2)
+                            if not self._interruptible_sleep(2):
+                                break
                             continue
                         self._round_in_flight = True
                     try:
@@ -6596,7 +6637,8 @@ class DoubleMartingaleBot:
                             partial_profit, call_info, put_info, partial=True, both_legs=False
                         )
                         self.persist_state("partial fill")
-                        time.sleep(10)
+                        if not self._interruptible_sleep(10):
+                            break
                         continue
 
                     self.round_number += 1
@@ -6752,7 +6794,8 @@ class DoubleMartingaleBot:
                                     f" — {pause_time}-second cooldown before next round."
                                 )
                                 # Always pause 5 candles after every full step loss
-                                time.sleep(pause_time)
+                                if not self._interruptible_sleep(pause_time):
+                                    break
                                 _loss_limit = self._consec_ladder_loss_limit
                                 _pause_sec = self._consec_ladder_loss_pause_sec
                                 if _loss_limit > 0 and self._consecutive_full_ladder_losses >= _loss_limit:
@@ -6763,7 +6806,8 @@ class DoubleMartingaleBot:
                                             f"🛑 {self._consecutive_full_ladder_losses} full-ladder losses in a row — "
                                             f"additional {_extra_min:.0f} min pause to wait out bad market conditions."
                                         )
-                                        time.sleep(_extra_sec)
+                                        if not self._interruptible_sleep(_extra_sec):
+                                            break
                                     self._consecutive_full_ladder_losses = 0
                             else:
                                 self._finalize_session("Tier exhausted")
@@ -6780,16 +6824,19 @@ class DoubleMartingaleBot:
                             logger.info(
                                 f"Risk mode — pausing {pause:.0f}s before next round"
                             )
-                            time.sleep(pause)
+                            if not self._interruptible_sleep(pause):
+                                break
                     else:
-                        time.sleep(3)
+                        if not self._interruptible_sleep(3):
+                            break
 
                 except Exception as inner_e:
                     logger.error(f"Error during bot iteration: {inner_e}")
                     self.last_error = str(inner_e)
                     self._notify("Bot error", str(inner_e)[:500])
                     logger.info("Attempting to reconnect and resume in 10 seconds...")
-                    time.sleep(10)
+                    if not self._interruptible_sleep(10):
+                        break
                     if not self._ensure_api_connection(force=True):
                         self._notify("Disconnected", "Reconnect failed — check IQ Option")
 

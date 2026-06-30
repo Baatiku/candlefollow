@@ -6,6 +6,32 @@ const FETCH_TIMEOUT_MS = 4000;
 const ACTION_TIMEOUT_MS = 20000;
 const RESET_TIMEOUT_MS = 120000;
 
+/** Always [[step amounts...]] — handles flat [1,3,9] from older API responses. */
+function normalizeBudgetTiers(raw) {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return [[1, 3, 9, 25, 80, 180, 402]];
+  }
+  const nested = typeof raw[0] === 'number' ? [raw] : raw;
+  return nested.map((tier) =>
+    (Array.isArray(tier) ? tier : [tier]).map((n) => Math.max(1, Number(n) || 1))
+  );
+}
+
+function formatApiErrorDetail(detail) {
+  if (!detail) return 'Save failed';
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((e) => {
+        if (typeof e === 'string') return e;
+        const loc = Array.isArray(e.loc) ? e.loc.join('.') : '';
+        return e.msg ? `${loc ? `${loc}: ` : ''}${e.msg}` : JSON.stringify(e);
+      })
+      .join('; ');
+  }
+  return JSON.stringify(detail);
+}
+
 async function apiFetch(path, options = {}, timeoutMs = FETCH_TIMEOUT_MS) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -361,8 +387,9 @@ function App() {
   const loadOptLogs = useCallback(async () => {
     try {
       const res = await fetch('/api/ai-optimization-logs');
+      if (!res.ok) return;
       const data = await res.json();
-      setOptLogs(data);
+      setOptLogs(Array.isArray(data) ? data : []);
     } catch (err) {
       console.error("Failed to load AI Opt logs", err);
     }
@@ -371,8 +398,9 @@ function App() {
   const loadEvalLogs = useCallback(async () => {
     try {
       const res = await fetch('/api/ai-evaluator-logs');
+      if (!res.ok) return;
       const data = await res.json();
-      setEvalLogs(data);
+      setEvalLogs(Array.isArray(data) ? data : []);
     } catch (err) {
       console.error("Failed to load AI Eval logs", err);
     }
@@ -664,7 +692,7 @@ function App() {
 
   const initTierEditor = () => {
     const current = config?.budget_tiers || status?.budget_tiers || [[1, 3, 9, 25, 80, 180, 402]];
-    setEditTiers(current.map(t => [...t]));
+    setEditTiers(normalizeBudgetTiers(current));
     setEditAutoBracket(config?.auto_bracket_enabled ?? true);
     setBalanceTierBrackets(config?.balance_tier_brackets || balanceTierBrackets);
     setTierSaveMsg('');
@@ -686,34 +714,36 @@ function App() {
 
   const saveTiers = async () => {
     if (!editTiers) return;
+    if (status?.running) {
+      setTierSaveMsg('Stop the bot before saving bracket tiers.');
+      return;
+    }
     setTierSaveMsg('');
-    const cleanedTiers = editTiers.map((tier) =>
-      tier.map((amount) => Math.max(1, Number(amount) || 1))
-    );
+    const cleanedTiers = normalizeBudgetTiers(editTiers);
     try {
       const payload = {
         budget_tiers: cleanedTiers,
-        auto_bracket_enabled: editAutoBracket
+        auto_bracket_enabled: editAutoBracket,
       };
-      const res = await apiFetch('/config', {
+      const res = await apiFetch('/bracket-config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       }, ACTION_TIMEOUT_MS);
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        const detail = err.detail;
-        const msg = typeof detail === 'string'
-          ? detail
-          : Array.isArray(detail)
-            ? detail.map(e => (typeof e === 'string' ? e : e.msg || JSON.stringify(e))).join('; ')
-            : 'Save failed';
-        setTierSaveMsg(msg);
+        setTierSaveMsg(formatApiErrorDetail(err.detail));
         return;
       }
+      const data = await res.json().catch(() => ({}));
+      const savedTiers = normalizeBudgetTiers(data.budget_tiers || cleanedTiers);
       setTierSaveMsg('Tiers saved!');
-      setEditTiers(cleanedTiers);
-      setConfig({ ...config, budget_tiers: cleanedTiers, auto_bracket_enabled: editAutoBracket });
+      setEditTiers(savedTiers);
+      setConfig({
+        ...config,
+        budget_tiers: savedTiers,
+        auto_bracket_enabled: data.auto_bracket_enabled ?? editAutoBracket,
+      });
       setTimeout(() => setTierSaveMsg(''), 3000);
     } catch (err) {
       setTierSaveMsg('Could not reach server');
@@ -885,7 +915,7 @@ function App() {
     );
   }
 
-  const tiers = config.budget_tiers || status.budget_tiers || [];
+  const tiers = normalizeBudgetTiers(config?.budget_tiers || status?.budget_tiers || []);
   const tierNum = (status.current_tier_index || 0) + 1;
   const assignedTier = status.assigned_tier || tierNum;
   const stepNum = status.current_step || (status.session_round_count || 0) + 1;
@@ -1442,7 +1472,7 @@ function App() {
                             key={idx}
                             type="button"
                             disabled={editAutoBracket}
-                            onClick={() => setEditTiers([bracket.val])}
+                            onClick={() => setEditTiers(normalizeBudgetTiers(bracket.val))}
                             style={{
                               padding: '0.4rem 0.8rem',
                               borderRadius: '4px',
