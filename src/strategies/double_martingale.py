@@ -71,9 +71,8 @@ BALANCE_TIER_TABLE = [
     (150000, [100, 250, 625, 1563, 3906, 9766, 24414, 61035, 152588],  [100, 250, 625, 1563, 3906, 9766, 24414, 61035, 152588]),
 ]
 
-# Human step 5 → 0-based ladder index 4. Win/loss here triggers pair rotation.
-STEP_FOUR_ROTATION_INDEX = 3
-STEP_FOUR_ASSET_PENALTY_MINUTES = 30
+# Step-4 asset rotation has been removed. The bot plays steps in order
+# regardless of which step it is on; no pair switch is triggered at step 4.
 
 
 def balance_tier_brackets():
@@ -1447,32 +1446,8 @@ class DoubleMartingaleBot:
             f"(until {until.strftime('%H:%M')} UTC)"
         )
 
-    def _rotate_asset_after_step_four(self, outcome):
-        """
-        After 4 consecutive losses: penalise the current pair and — on loss —
-        switch to a fresh asset to replay step 4 before advancing to step 5.
-        The retry flag prevents this function from firing a second time on the
-        replay candle.
-        """
-        if self.session_round_count != STEP_FOUR_ROTATION_INDEX:
-            return
-        if getattr(self, "_step_four_retry_pending", False):
-            return
-        asset = self.asset
-        self._apply_asset_penalty_uncapped(
-            asset,
-            STEP_FOUR_ASSET_PENALTY_MINUTES,
-            f"step 4 {outcome} — defer rescan until step 1",
-        )
-        self._notify(
-            "Pair flagged",
-            f"{asset} reached step 4 ({outcome}). "
-            f"Penalty {STEP_FOUR_ASSET_PENALTY_MINUTES}m for future scans; "
-            f"{'replaying step 4 on new asset' if outcome == 'loss' else 'continuing this ladder on ' + asset}.",
-        )
-        logger.warning(
-            f"{asset} step 4 {outcome} — penalty applied for future selection"
-        )
+    # _rotate_asset_after_step_four removed — step-4 pair rotation is disabled.
+    # The bot plays all ladder steps in order without switching pairs at step 4.
 
     def _check_deep_sequence_strike(self, completed_step: int):
         """
@@ -1906,7 +1881,7 @@ class DoubleMartingaleBot:
         return False, ""
 
     def _apply_consecutive_loss_penalty(self, asset, reason):
-        mins = int(getattr(app_config, "PAIR_CONSECUTIVE_LOSS_PENALTY_MINUTES", 15))
+        mins = int(getattr(app_config, "PAIR_CONSECUTIVE_LOSS_PENALTY_MINUTES", 5))
         self._apply_asset_penalty_uncapped(asset, mins, reason)
         self._pair_consecutive_losses[asset] = 0
 
@@ -1916,7 +1891,7 @@ class DoubleMartingaleBot:
         the baseline from when we picked it. Penalize + rescan if conditions degraded.
         Never switches pairs mid-ladder.
         """
-        threshold = int(getattr(app_config, "PAIR_CONSECUTIVE_LOSS_THRESHOLD", 4))
+        threshold = int(getattr(app_config, "PAIR_CONSECUTIVE_LOSS_THRESHOLD", 5))
         streak = int(self._pair_consecutive_losses.get(self.asset, 0) or 0)
         if streak < threshold:
             return True
@@ -1947,7 +1922,7 @@ class DoubleMartingaleBot:
 
         logger.warning(
             f"📉 {self.asset}: degraded after {streak} losses ({detail}) — "
-            f"{getattr(app_config, 'PAIR_CONSECUTIVE_LOSS_PENALTY_MINUTES', 15)}m penalty, rescanning"
+            f"{getattr(app_config, 'PAIR_CONSECUTIVE_LOSS_PENALTY_MINUTES', 5)}m penalty, rescanning"
         )
         self._apply_consecutive_loss_penalty(
             self.asset, f"{streak} consecutive losses — {detail}"
@@ -6113,17 +6088,11 @@ class DoubleMartingaleBot:
                         break
 
                     _balance_downgrade_round = self.last_bet_breakdown.get("balance_downgrade", False) if self.last_bet_breakdown else False
-                    _is_step_four_retry = getattr(self, "_step_four_retry_pending", False)
 
                     if not both_lost:
                         logger.info(
                             f"ROUND WON — at least one leg profitable (Tier {self.current_tier_index + 1})."
                         )
-                        if _is_step_four_retry:
-                            logger.info("Step 4 retry WON on new asset — resetting to step 1.")
-                            self._step_four_retry_pending = False
-                        else:
-                            self._rotate_asset_after_step_four("win")
                         self._consecutive_full_ladder_losses = 0
                         self._finalize_session("Round Won")
                     elif _balance_downgrade_round:
@@ -6135,47 +6104,10 @@ class DoubleMartingaleBot:
                             "Balance downgrade reset",
                             f"Scheduled step unaffordable — played fallback bet. Resetting to step 1. Debt ${self.cumulative_debt:.2f}.",
                         )
-                        self._step_four_retry_pending = False
                         self._consecutive_full_ladder_losses = 0
                         self._finalize_session("Round Won")
-                    elif (
-                        self.session_round_count == STEP_FOUR_ROTATION_INDEX
-                        and not _is_step_four_retry
-                    ):
-                        # Step 4 lost for the first time — penalise pair, switch asset,
-                        # replay step 4 on the new pair before advancing to step 5.
-                        # (debt already applied above via _apply_round_loss_to_debt)
-                        self._rotate_asset_after_step_four("loss")
-                        self._step_four_retry_pending = True
-                        self._last_ladder_prep_key = None
-                        self.last_trend_direction = None
-                        old_asset = self.asset
-                        self._apply_auto_asset_selection(reason="step 4 rotation retry")
-                        if self.asset == old_asset:
-                            # Fallback when auto-select disabled or no better pair scored —
-                            # force a direct scan to escape the penalised pair.
-                            self._switch_to_next_tradeable_pair(
-                                "step 4 rotation retry", relaxed=True
-                            )
-                        logger.warning(
-                            f"Step 4 lost on {old_asset} — switching to {self.asset} "
-                            f"to replay step 4 before advancing to step 5."
-                        )
-                        self._notify(
-                            "Step 4 retry",
-                            f"Step 4 lost on {old_asset}. Replaying step 4 on {self.asset} before advancing.",
-                        )
-                        self._sync_ladder_indices()
                     else:
-                        if _is_step_four_retry:
-                            # Retry also lost — clear flag and advance normally to step 5
-                            logger.warning(
-                                f"Step 4 retry LOST on {self.asset} — advancing to step 5."
-                            )
-                            self._step_four_retry_pending = False
-                        else:
-                            self._rotate_asset_after_step_four("loss")
-                        # One ladder step per round.
+                        # One ladder step per round — no step-4 pair rotation.
                         steps_consumed = 1
 
                         next_step = self.session_round_count + steps_consumed
