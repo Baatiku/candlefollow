@@ -255,11 +255,6 @@ DRAWDOWN_RECOVERY_PCT = float(os.getenv("DRAWDOWN_RECOVERY_PCT", "0.10"))
 DRAWDOWN_RISK_MODE_MINUTES = float(os.getenv("DRAWDOWN_RISK_MODE_MINUTES", "45"))
 DRAWDOWN_RISK_PAUSE_SEC = float(os.getenv("DRAWDOWN_RISK_PAUSE_SEC", "120"))
 
-# Consecutive full-ladder-loss pause
-# If the bot loses all 3 steps back-to-back N times in a row, pause trading
-# for a cooldown period before resuming. Resets on any round win.
-CONSECUTIVE_LADDER_LOSS_LIMIT   = int(os.getenv("CONSECUTIVE_LADDER_LOSS_LIMIT", "3"))
-CONSECUTIVE_LADDER_LOSS_PAUSE_SEC = float(os.getenv("CONSECUTIVE_LADDER_LOSS_PAUSE_SEC", "600"))
 
 # Session-loss recovery escalation — DISABLED.
 # Tier escalation is now driven entirely by ladder exhaustion:

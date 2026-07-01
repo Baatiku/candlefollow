@@ -28,7 +28,7 @@ from bot_state_store import (
 from notifier import notify as send_alert
 from trade_log import append_trade, copy_bot_evaluation, copy_entry_snapshot, get_recent_trades
 from market_metrics import entry_snapshot_from_candles
-from pair_health import asset_health_check, pattern_quality_factor, adjusted_score as ph_adjusted_score
+from pair_health import pattern_quality_factor, adjusted_score as ph_adjusted_score
 from pair_learning import (
     clear_pair_learning_store,
     effective_gates_for_asset,
@@ -376,40 +376,22 @@ class DoubleMartingaleBot:
         self.asset_penalty_box = {}
         self._asset_flip_blocked: dict = {}  # asset → unblock unix timestamp (slope-flip rule)
         self._gate_rejection_log: deque = deque(maxlen=50)
-        self._asset_deep_strike_count = {}
         self._pair_filter_skip_streak = {}
-        # Per-asset empirical suspension state (pair_health.py)
-        self.asset_suspension_enabled: bool = bool(getattr(app_config, "ASSET_SUSPENSION_ENABLED", True))
-        self.asset_suspension_shadow_mode: bool = bool(getattr(app_config, "ASSET_SUSPENSION_SHADOW_MODE", True))
-        self.asset_suspension_lookback: int = int(getattr(app_config, "ASSET_SUSPENSION_LOOKBACK", 40))
-        self.asset_suspension_min_wilson_winrate: float = float(getattr(app_config, "ASSET_SUSPENSION_MIN_WILSON_WINRATE", 0.40))
-        self.asset_suspension_cooldown_seconds: float = float(getattr(app_config, "ASSET_SUSPENSION_COOLDOWN_SECONDS", 6 * 3600))
-        self._asset_suspension_timestamps: dict = {}  # asset → unix ts of last suspension
         # Hot-pair loyalty: track consecutive wins on the same pair this session.
         # After HOT_PAIR_MIN_WINS wins the bot stays on that pair as long as it
         # is still tradeable — it only switches when the pair loses or goes flat.
         self._hot_pair: str = ""
         self._hot_pair_consecutive_wins: int = 0
         self._pending_recovery_rescan: bool = False  # set after T2/T4 debt-chip win to force fresh scan at next S1
-        # Consecutive full-ladder-loss pause: counts how many complete 3-step
-        # ladders have been lost back-to-back. Resets on any round win.
-        self._consecutive_full_ladder_losses: int = 0
-        self._consec_ladder_loss_limit: int = int(
-            getattr(app_config, "CONSECUTIVE_LADDER_LOSS_LIMIT", 2)
-        )
-        self._consec_ladder_loss_pause_sec: float = float(
-            getattr(app_config, "CONSECUTIVE_LADDER_LOSS_PAUSE_SEC", 1800.0)
-        )
-        # Session-loss recovery escalation state
-        self._recovery_tier_bump: int = 0        # tiers above base currently active
-        self._recovery_hard_stopped: bool = False # session stopped by hard-stop rule
         # Pair quality degradation: rolling history of winning ERs per pair.
         # Used to skip a pair whose current ER has dropped well below its
         # recent winning average (the market is no longer as directional).
         self._pair_win_er_history: dict = {}   # asset -> [er, er, ...]
         self._pair_recent_results: dict = {}  # asset -> [True/False, ...] recent win/loss window
-        self._pair_consecutive_losses: dict = {}  # asset -> int session consecutive losses
-        self._active_pair_baseline: dict = {}  # metrics snapshot when pair was selected
+        # Sliding-window full-ladder-loss tracker: per-pair list of UTC datetimes
+        # when that pair exhausted all ladder steps. 2+ exhaustions in any 15-minute
+        # window → 5-minute penalty (applied only between ladders, never mid-trade).
+        self._pair_ladder_loss_times: dict = {}  # asset -> [datetime, ...]
         self._last_gate_er: float = 0.0        # ER captured at the moment of entry
         self.last_pair_quality = {}
         self.last_entry_snapshot = None
@@ -511,14 +493,12 @@ class DoubleMartingaleBot:
     def _clear_ephemeral_session_state(self):
         """In-memory session data not stored in bot_state.json."""
         self.asset_penalty_box.clear()
-        self._asset_deep_strike_count.clear()
         self._pair_filter_skip_streak.clear()
         self._hot_pair = ""
         self._hot_pair_consecutive_wins = 0
         self._pair_win_er_history.clear()
         self._pair_recent_results.clear()
-        self._pair_consecutive_losses.clear()
-        self._active_pair_baseline.clear()
+        self._pair_ladder_loss_times.clear()
         self._last_gate_er = 0.0
         self._inflight_trade_ids = []
         self._last_ladder_prep_key = None
@@ -551,8 +531,6 @@ class DoubleMartingaleBot:
         self.tier_escalations_date = None
         self.session_max_rounds = len(tier0)
         self.reserve_wins_needed = 0
-        self._recovery_tier_bump = 0
-        self._recovery_hard_stopped = False
         bet_info = self._compute_round_bet()
         self.current_bet = bet_info["amount"]
         self.last_bet_breakdown = bet_info
@@ -1449,34 +1427,6 @@ class DoubleMartingaleBot:
     # _rotate_asset_after_step_four removed — step-4 pair rotation is disabled.
     # The bot plays all ladder steps in order without switching pairs at step 4.
 
-    def _check_deep_sequence_strike(self, completed_step: int):
-        """
-        Track sequences that reached step 3 or deeper.
-        After 2 such deep sequences on the same pair in one session,
-        apply a short penalty so the bot rescans rather than
-        repeatedly grinding a struggling pair.
-        """
-        DEEP_STEP_THRESHOLD = 3
-        MAX_STRIKES = 2
-        PENALTY_MINUTES = 15
-        if completed_step < DEEP_STEP_THRESHOLD:
-            return
-        asset = self.asset
-        count = self._asset_deep_strike_count.get(asset, 0) + 1
-        self._asset_deep_strike_count[asset] = count
-        logger.info(
-            f"⚠️ Deep-sequence strike {count}/{MAX_STRIKES} for {asset} "
-            f"(completed at step {completed_step})"
-        )
-        if count >= MAX_STRIKES:
-            penalty_until = datetime.datetime.utcnow() + datetime.timedelta(
-                minutes=PENALTY_MINUTES
-            )
-            self.asset_penalty_box[asset] = penalty_until
-            logger.warning(
-                f"🚫 {asset} session-suspended after {count} deep sequences — "
-                f"penalty until {penalty_until.strftime('%H:%M')} UTC"
-            )
 
     def _effective_min_er(self) -> float:
         """
@@ -1820,121 +1770,32 @@ class DoubleMartingaleBot:
         close_p = float(last.get("close", 0) or 0)
         return "call" if close_p >= open_p else "put"
 
-    def _record_pair_selection_baseline(self, asset_name, movement_data, reason=""):
-        """Snapshot rank metrics when a pair is chosen — used for step-1 degradation checks."""
-        if not asset_name or not movement_data:
-            return
-        self._active_pair_baseline = {
-            "asset": asset_name,
-            "rank_score": round(self._asset_rank_score(movement_data), 1),
-            "straddle_score": float(movement_data.get("straddle_score", 0) or 0),
-            "er": float(movement_data.get("efficiency_ratio", 0) or 0),
-            "alternations": int(movement_data.get("alternations", 0) or 0),
-            "path_ratio": float(movement_data.get("path_ratio", 0) or 0),
-            "selected_at": datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z",
-            "reason": reason,
-        }
-        logger.info(
-            f"📌 Pair baseline — {asset_name}: rank={self._active_pair_baseline['rank_score']:.0f}, "
-            f"ER={self._active_pair_baseline['er']:.2f}, "
-            f"alts={self._active_pair_baseline['alternations']}, "
-            f"straddle={self._active_pair_baseline['straddle_score']:.0f} ({reason})"
-        )
-
-    def _pair_baseline_degraded(self, current):
-        """True when live scan metrics fell materially below selection baseline."""
-        baseline = self._active_pair_baseline or {}
-        if baseline.get("asset") != self.asset:
-            return False, ""
-        er_ratio = float(getattr(app_config, "PAIR_QUALITY_DEGRADATION_ER_RATIO", 0.75))
-        rank_ratio = float(getattr(app_config, "PAIR_QUALITY_DEGRADATION_RANK_RATIO", 0.70))
-        max_alt = int(getattr(app_config, "RANGING_MAX_ALTERNATIONS", 3))
-
-        cur_er = float(current.get("efficiency_ratio", 0) or 0)
-        base_er = float(baseline.get("er", 0) or 0)
-        if base_er > 0.05 and cur_er < base_er * er_ratio:
-            return True, f"ER {cur_er:.2f} < {er_ratio:.0%} of baseline {base_er:.2f}"
-
-        cur_rank = self._asset_rank_score(current)
-        base_rank = float(baseline.get("rank_score", 0) or 0)
-        if base_rank > 0 and cur_rank < base_rank * rank_ratio:
-            return True, (
-                f"rank {cur_rank:.0f} < {rank_ratio:.0%} of baseline {base_rank:.0f}"
-            )
-
-        cur_alt = int(current.get("alternations", 0) or 0)
-        base_alt = int(baseline.get("alternations", 0) or 0)
-        if cur_alt > max_alt and cur_alt > base_alt:
-            return True, f"alternations worsened {base_alt}→{cur_alt} (max {max_alt})"
-
-        cur_path = float(current.get("path_ratio", 0) or 0)
-        base_path = float(baseline.get("path_ratio", 0) or 0)
-        whipsaw_er = float(getattr(app_config, "WHIIPSAW_MAX_ER", 0.32))
-        whipsaw_path = float(getattr(app_config, "WHIIPSAW_PATH_RATIO_THRESHOLD", 2.8))
-        if (
-            cur_path >= whipsaw_path
-            and cur_er <= whipsaw_er
-            and cur_path > base_path * 1.15
-        ):
-            return True, f"chop signature path={cur_path:.1f} ER={cur_er:.2f}"
-
-        return False, ""
-
-    def _apply_consecutive_loss_penalty(self, asset, reason):
-        mins = int(getattr(app_config, "PAIR_CONSECUTIVE_LOSS_PENALTY_MINUTES", 5))
-        self._apply_asset_penalty_uncapped(asset, mins, reason)
-        self._pair_consecutive_losses[asset] = 0
-
-    def _check_pair_performance_at_step_one(self):
+    def _record_ladder_exhaustion_and_check_penalty(self):
         """
-        At step 1 only: if this pair lost N times in a row, rescan and compare to
-        the baseline from when we picked it. Penalize + rescan if conditions degraded.
-        Never switches pairs mid-ladder.
-        """
-        threshold = int(getattr(app_config, "PAIR_CONSECUTIVE_LOSS_THRESHOLD", 5))
-        streak = int(self._pair_consecutive_losses.get(self.asset, 0) or 0)
-        if streak < threshold:
-            return True
+        Sliding-window performance rule (applied only between ladders, never mid-trade).
 
-        current = self._score_asset_movement(self.asset)
-        if not current:
+        Tracks per-pair timestamps of full-ladder exhaustions (all steps lost).
+        If a pair exhausts the ladder 2 or more times within any rolling 15-minute
+        window, it earns a 5-minute penalty box entry so the bot rescans for a
+        better pair before starting the next ladder.
+        """
+        asset = self.asset
+        now = datetime.datetime.utcnow()
+        cutoff = now - datetime.timedelta(minutes=15)
+
+        times = self._pair_ladder_loss_times.get(asset, [])
+        times = [t for t in times if t > cutoff]
+        times.append(now)
+        self._pair_ladder_loss_times[asset] = times
+
+        if len(times) >= 2:
+            penalty_until = now + datetime.timedelta(minutes=5)
+            self.asset_penalty_box[asset] = penalty_until
+            self._pair_ladder_loss_times[asset] = []
             logger.warning(
-                f"📉 {self.asset}: {streak} consecutive losses — no candle data for rescan"
+                f"📉 {asset}: {len(times)} full-ladder losses in 15 min — "
+                f"5-min penalty applied (until {penalty_until.strftime('%H:%M')} UTC)"
             )
-            return True
-
-        degraded, detail = self._pair_baseline_degraded(current)
-        baseline = self._active_pair_baseline or {}
-        logger.info(
-            f"📉 {self.asset} performance review after {streak} losses: "
-            f"now rank={self._asset_rank_score(current):.0f}/ER={current.get('efficiency_ratio', 0):.2f}/"
-            f"alts={current.get('alternations', 0)} vs baseline "
-            f"rank={baseline.get('rank_score', '?')}/ER={baseline.get('er', '?')}/"
-            f"alts={baseline.get('alternations', '?')}"
-        )
-
-        if not degraded:
-            logger.info(
-                f"📉 {self.asset}: {streak} losses but metrics still near baseline — keeping pair"
-            )
-            self._pair_consecutive_losses[self.asset] = 0
-            return True
-
-        logger.warning(
-            f"📉 {self.asset}: degraded after {streak} losses ({detail}) — "
-            f"{getattr(app_config, 'PAIR_CONSECUTIVE_LOSS_PENALTY_MINUTES', 5)}m penalty, rescanning"
-        )
-        self._apply_consecutive_loss_penalty(
-            self.asset, f"{streak} consecutive losses — {detail}"
-        )
-        self._active_pair_baseline.clear()
-        if self.auto_select_asset:
-            self._apply_auto_asset_selection(reason="pair performance degradation", relaxed=True)
-            self._wait_for_price_data()
-            fresh = self._score_asset_movement(self.asset)
-            if fresh:
-                self._record_pair_selection_baseline(self.asset, fresh, "post-degradation rescan")
-        return self._score_asset_movement(self.asset) is not None
 
     def _score_asset_movement(self, asset_name):
         if not self.api:
@@ -2753,19 +2614,12 @@ class DoubleMartingaleBot:
             and reason not in _loyalty_override_reasons
             and self.session_round_count == 0
         ):
-            current = self._score_asset_movement(self.asset)
-            if current:
-                degraded, detail = self._pair_baseline_degraded(current)
-                if not degraded:
-                    self.last_asset_selection_note = (
-                        f"🔥 Hot pair loyalty — {self.asset} "
-                        f"({self._hot_pair_consecutive_wins}W streak, baseline intact)"
-                    )
-                    logger.info(self.last_asset_selection_note)
-                    return
-                logger.info(
-                    f"Hot pair {self.asset} baseline degraded ({detail}) — allowing rescan"
-                )
+            self.last_asset_selection_note = (
+                f"🔥 Hot pair loyalty — {self.asset} "
+                f"({self._hot_pair_consecutive_wins}W streak)"
+            )
+            logger.info(self.last_asset_selection_note)
+            return
 
         # STRICT CANDLE FOLLOW: Never switch pairs mid-ladder.
         # Exception: "step 4 rotation retry" must always switch regardless.
@@ -2805,19 +2659,11 @@ class DoubleMartingaleBot:
             self._switch_trading_asset(best)
             self._wait_for_price_data()
             self._pair_filter_skip_streak[self.asset] = 0
-            if self.session_round_count == 0:
-                self._record_pair_selection_baseline(
-                    best, best_data, reason or "auto-select"
-                )
             self.last_asset_selection_note = (
                 f"Selected {best} (straddle {best_score:.0f}, "
                 f"ER {best_data.get('efficiency_ratio', 0):.2f}) — {summary}"
             )
         else:
-            if self.session_round_count == 0 and best_data:
-                self._record_pair_selection_baseline(
-                    best, best_data, reason or "keeping current"
-                )
             self.last_asset_selection_note = (
                 f"Keeping {best} (straddle {best_score:.0f}) — {summary}"
             )
@@ -2847,10 +2693,6 @@ class DoubleMartingaleBot:
         new_asset = ranked[0][0]
         if self._switch_trading_asset(new_asset):
             self._pair_filter_skip_streak[new_asset] = 0
-            if self.session_round_count == 0:
-                movement = self._score_asset_movement(new_asset)
-                if movement:
-                    self._record_pair_selection_baseline(new_asset, movement, reason)
             logger.info(
                 f"Switched to {new_asset} (straddle {ranked[0][1]:.0f}) — {reason}"
             )
@@ -2961,9 +2803,6 @@ class DoubleMartingaleBot:
 
     def _ensure_tradeable_market(self):
         """Called only at step 1 — safe to auto-select since no trades are in play."""
-        if not self._check_pair_performance_at_step_one():
-            return False
-
         if not self.asset:
             if self.auto_select_asset:
                 self._apply_auto_asset_selection(reason="initial selection", relaxed=True)
@@ -3628,14 +3467,6 @@ class DoubleMartingaleBot:
         max_tier = len(self.budget_tiers) - 1 if self.budget_tiers else 0
         return min(max(0, floor), max_tier)
 
-    def _evaluate_recovery_mode(self):
-        """
-        Disabled — tier escalation is now driven entirely by ladder exhaustion.
-        When all steps of a tier are lost, _maybe_escalate_assigned_tier_after_exhaustion
-        advances to the next tier after the 5-minute cooldown.
-        Session P/L thresholds and hard stops have been removed.
-        """
-        return
 
     def _init_risk_state(self):
         self.session_peak_balance = 0.0
@@ -5066,7 +4897,6 @@ class DoubleMartingaleBot:
             floor = self._balance_baseline_tier_index()
             self.assigned_tier_index = floor
             self.current_tier_index = floor
-            self._check_deep_sequence_strike(self.session_round_count + 1)
             self.session_round_count = 0
             logger.info(
                 f"All debt recovered — baseline Tier {floor + 1} step 1 "
@@ -5189,7 +5019,6 @@ class DoubleMartingaleBot:
         step_label = step_idx + 1                     # 1-based for logs
         is_reserve = tier_idx in ROUND_RESERVE_TIERS  # {1, 3, 5}
 
-        self._check_deep_sequence_strike(step_label)
         self.session_round_count = 0  # always back to S1 of current tier
         self._reset_ladder_tracking()
         self.tier_recovery_wins = 0
@@ -5754,70 +5583,6 @@ class DoubleMartingaleBot:
                     # ── Asset suspension gate (empirical win-rate, shadow mode) ────
                     # Runs AFTER per-round gate so we don't add DB I/O on rounds that
                     # were already skipped for other reasons.
-                    if self.asset_suspension_enabled:
-                        _susp_now = time.time()
-                        _last_susp = self._asset_suspension_timestamps.get(self.asset, 0)
-                        _in_cooldown = (
-                            _last_susp > 0
-                            and (_susp_now - _last_susp) < self.asset_suspension_cooldown_seconds
-                        )
-                        if _in_cooldown:
-                            _remaining = self.asset_suspension_cooldown_seconds - (_susp_now - _last_susp)
-                            _susp_log = {
-                                "reason": "asset_suspension_cooldown",
-                                "asset": self.asset,
-                                "would_suspend": True,
-                                "shadow_mode": self.asset_suspension_shadow_mode,
-                                "cooldown_remaining_sec": round(_remaining, 1),
-                                "ts": _susp_now,
-                            }
-                            self._gate_rejection_log.append(_susp_log)
-                            if not self.asset_suspension_shadow_mode:
-                                logger.info(
-                                    f"⏭️ {self.asset}: suspension cooldown "
-                                    f"({_remaining:.0f}s remaining)"
-                                )
-                                self._skip_to_next_entry_window("asset suspension cooldown")
-                                continue
-                        else:
-                            _health = asset_health_check(
-                                self.asset,
-                                get_recent_trades,
-                                lookback=self.asset_suspension_lookback,
-                                min_wilson_winrate=self.asset_suspension_min_wilson_winrate,
-                            )
-                            _susp_log = {
-                                "reason": "asset_health_check",
-                                "asset": self.asset,
-                                "would_suspend": _health["would_suspend"],
-                                "shadow_mode": self.asset_suspension_shadow_mode,
-                                "wilson_lower_bound": _health.get("wilson_lower_bound"),
-                                "raw_winrate": _health.get("raw_winrate"),
-                                "sample_size": _health.get("sample_size"),
-                                "ts": _susp_now,
-                            }
-                            if _health["would_suspend"]:
-                                self._gate_rejection_log.append(_susp_log)
-                                # Record timestamp in BOTH modes so shadow logs
-                                # reflect cooldown behavior before enforcement is
-                                # turned on — this is observability, not blocking.
-                                self._asset_suspension_timestamps[self.asset] = _susp_now
-                                if not self.asset_suspension_shadow_mode:
-                                    logger.info(
-                                        f"⏭️ Suspending {self.asset}: wilson_lb="
-                                        f"{_health['wilson_lower_bound']} over "
-                                        f"{_health['sample_size']} rounds"
-                                    )
-                                    self._skip_to_next_entry_window("asset suspension")
-                                    continue
-                                else:
-                                    logger.info(
-                                        f"🔍 [SHADOW] Would suspend {self.asset}: "
-                                        f"wilson_lb={_health.get('wilson_lower_bound')} "
-                                        f"raw_wr={_health.get('raw_winrate')} "
-                                        f"n={_health.get('sample_size')} (shadow, not blocking)"
-                                    )
-
                     target_dir = pair_quality["direction"]
                     candle_dir = self._closed_candle_direction(self.asset)
                     if candle_dir and target_dir != candle_dir:
@@ -6068,24 +5833,21 @@ class DoubleMartingaleBot:
                                 _hist.pop(0)
                         # Win -> Reset last trend direction so we pick direction fresh
                         self.last_trend_direction = None
-                        # Track per-asset result for conviction gate (feature 4)
+                        # Track per-asset result for conviction gate
                         _rr_window = getattr(app_config, "PAIR_RECENT_RESULT_WINDOW", 6)
                         _rr = self._pair_recent_results.setdefault(self.asset, [])
                         _rr.append(True)
                         if len(_rr) > _rr_window:
                             _rr.pop(0)
-                        self._pair_consecutive_losses[self.asset] = 0
                     else:
                         self.losses += 1
                         self._record_ladder_step_loss(self._pending_entry_quality)
-                        # Track per-asset result for conviction gate (feature 4)
+                        # Track per-asset result for conviction gate
                         _rr_loss_window = getattr(app_config, "PAIR_RECENT_RESULT_WINDOW", 6)
                         _rr_loss = self._pair_recent_results.setdefault(self.asset, [])
                         _rr_loss.append(False)
                         if len(_rr_loss) > _rr_loss_window:
                             _rr_loss.pop(0)
-                        streak = self._pair_consecutive_losses.get(self.asset, 0) + 1
-                        self._pair_consecutive_losses[self.asset] = streak
                         if round_profit < 0:
                             self._apply_round_loss_to_debt(round_profit)
 
@@ -6111,7 +5873,6 @@ class DoubleMartingaleBot:
                         logger.info(
                             f"ROUND WON — at least one leg profitable (Tier {self.current_tier_index + 1})."
                         )
-                        self._consecutive_full_ladder_losses = 0
                         self._finalize_session("Round Won")
                     elif _balance_downgrade_round:
                         logger.warning(
@@ -6122,7 +5883,6 @@ class DoubleMartingaleBot:
                             "Balance downgrade reset",
                             f"Scheduled step unaffordable — played fallback bet. Resetting to step 1. Debt ${self.cumulative_debt:.2f}.",
                         )
-                        self._consecutive_full_ladder_losses = 0
                         self._finalize_session("Round Won")
                     else:
                         # One ladder step per round — no step-4 pair rotation.
@@ -6139,42 +5899,13 @@ class DoubleMartingaleBot:
                         self.session_round_count = next_step
                         self._last_ladder_prep_key = None
                         if self._all_tier_steps_exhausted():
-                            if getattr(self, 'sequential_steps_mode', False):
-                                self._consecutive_full_ladder_losses += 1
-                                self.session_round_count = 0
-                                self.cumulative_debt = 0.0
-                                self._reset_ladder_tracking()
-                                tf = int(getattr(app_config, "FOLLOW_CANDLE_TIMEFRAME", 60))
-                                pause_time = tf * 5
-                                logger.warning(
-                                    f"Sequential LOSE all steps → wrapping to step 1 "
-                                    f"(consecutive full-ladder losses: {self._consecutive_full_ladder_losses})"
-                                    f" — {pause_time}-second cooldown before next round."
-                                )
-                                # Always pause 5 candles after every full step loss
-                                if not self._interruptible_sleep(pause_time):
-                                    break
-                                _loss_limit = self._consec_ladder_loss_limit
-                                _pause_sec = self._consec_ladder_loss_pause_sec
-                                if _loss_limit > 0 and self._consecutive_full_ladder_losses >= _loss_limit:
-                                    _extra_sec = max(0.0, _pause_sec - pause_time)
-                                    if _extra_sec > 0:
-                                        _extra_min = _extra_sec / 60
-                                        logger.warning(
-                                            f"🛑 {self._consecutive_full_ladder_losses} full-ladder losses in a row — "
-                                            f"additional {_extra_min:.0f} min pause to wait out bad market conditions."
-                                        )
-                                        if not self._interruptible_sleep(_extra_sec):
-                                            break
-                                    self._consecutive_full_ladder_losses = 0
-                            else:
-                                self._finalize_session("Tier exhausted")
+                            self._record_ladder_exhaustion_and_check_penalty()
+                            self._finalize_session("Tier exhausted")
                         else:
                             # Re-read direction next step — do not auto-flip, just drop sticky bias
                             self.last_trend_direction = None
                             self._sync_ladder_indices()
 
-                    self._evaluate_recovery_mode()
                     self.persist_state()
                     if (self._last_risk_limits or {}).get("risk_mode"):
                         pause = self.drawdown_risk_pause_sec
@@ -6331,9 +6062,6 @@ class DoubleMartingaleBot:
                 else None
             ),
             "tier_failure_streak": getattr(self, "tier_failure_streak", 0),
-            "consecutive_full_ladder_losses": getattr(self, "_consecutive_full_ladder_losses", 0),
-            "consec_ladder_loss_limit": getattr(self, "_consec_ladder_loss_limit", 2),
-            "consec_ladder_loss_pause_min": round(getattr(self, "_consec_ladder_loss_pause_sec", 600.0) / 60),
             "window_profit": getattr(self, "window_profit", 0.0),
             "evaluation_window_minutes": EVALUATION_WINDOW_MINUTES,
             "evaluation_window_start": (
@@ -6387,10 +6115,6 @@ class DoubleMartingaleBot:
             "asset_scores": self.asset_scores,
             "status_note": self.status_note,
             "asset_selection_note": self.last_asset_selection_note,
-            "active_pair_baseline": getattr(self, "_active_pair_baseline", {}) or {},
-            "pair_consecutive_losses": int(
-                (getattr(self, "_pair_consecutive_losses", {}) or {}).get(self.asset, 0)
-            ),
             "pair_quality": self.last_pair_quality,
             "pair_learning": pair_learning_summary(),
             "gates_for_active_pair": self._straddle_gate_thresholds(self.asset),
