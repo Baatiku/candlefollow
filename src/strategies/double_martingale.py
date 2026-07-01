@@ -1510,34 +1510,30 @@ class DoubleMartingaleBot:
         return self._seconds_past_candle() > self._placement_deadline_second()
 
     def _handle_penalty_box_block(self):
-        if self._in_active_ladder():
-            until = self.asset_penalty_box.get(self.asset)
-            remaining = max(0.0, (until - datetime.datetime.utcnow()).total_seconds())
-            mins = max(1, int(remaining / 60))
-            self.status_note = (
-                f"🔒 Mid-ladder lock — {self.asset} penalized (~{mins}m left) "
-                f"but staying on it (step {self.session_round_count + 1})"
-            )
-            # Rate-limit to once per 30 s — this code runs inside the polling loop
-            # and would otherwise produce hundreds of identical log lines per second.
-            _pb_log_times = getattr(self, "_penalty_box_log_times", {})
-            _last_log = _pb_log_times.get(self.asset, 0)
-            if time.time() - _last_log >= 30:
-                logger.info(
-                    f"{self.asset} in penalty box (~{mins}m) but mid-ladder lock active "
-                    f"(step {self.session_round_count + 1}) — continuing on same pair"
-                )
-                _pb_log_times[self.asset] = time.time()
-                self._penalty_box_log_times = _pb_log_times
-            return
         until = self.asset_penalty_box.get(self.asset)
+        if not until or datetime.datetime.utcnow() >= until:
+            # Penalty already expired between the outer check and here — nothing to do.
+            self.asset_penalty_box.pop(self.asset, None)
+            return
         remaining = max(0.0, (until - datetime.datetime.utcnow()).total_seconds())
         mins = max(1, int(remaining / 60))
         penalized = self.asset
-        self.status_note = f"🚫 {penalized} penalized (~{mins}m left) — scanning for another pair"
-        logger.warning(
-            f"{penalized} in penalty box (~{mins}m left) — not trading this pair"
+        mid_ladder = self._in_active_ladder()
+        step_label = f" (step {self.session_round_count + 1})" if mid_ladder else ""
+
+        self.status_note = (
+            f"🚫 {penalized} penalized (~{mins}m left){step_label} — scanning for another pair"
         )
+        # Rate-limit this log since it runs inside the tight polling loop.
+        _pb_log_times = getattr(self, "_penalty_box_log_times", {})
+        _last_log = _pb_log_times.get(penalized, 0)
+        if time.time() - _last_log >= 30:
+            logger.warning(
+                f"{penalized} in penalty box (~{mins}m left){step_label} — hunting for another pair"
+            )
+            _pb_log_times[penalized] = time.time()
+            self._penalty_box_log_times = _pb_log_times
+
         if self.auto_select_asset:
             self._apply_auto_asset_selection(
                 reason="penalty box", relaxed=True
@@ -1545,7 +1541,7 @@ class DoubleMartingaleBot:
             if self.asset != penalized and not self._is_asset_penalty_blocked():
                 self._wait_for_price_data()
                 logger.info(
-                    f"Penalty escape: left {penalized}, now on {self.asset}"
+                    f"Penalty escape{step_label}: left {penalized}, now on {self.asset}"
                 )
                 return
             if self._switch_to_next_tradeable_pair(
@@ -2669,8 +2665,8 @@ class DoubleMartingaleBot:
             return
 
         # STRICT CANDLE FOLLOW: Never switch pairs mid-ladder.
-        # Exception: "step 4 rotation retry" must always switch regardless.
-        _mid_ladder_bypass = {"trading start", "step 4 rotation retry"}
+        # Exception: penalty box and step-4 retry must always be able to switch.
+        _mid_ladder_bypass = {"trading start", "step 4 rotation retry", "penalty box"}
         if self._in_active_ladder() and reason not in _mid_ladder_bypass:
             logger.info(f"🔒 Locked to {self.asset} for the entire tier (step {self.session_round_count+1}).")
             return
@@ -2717,7 +2713,8 @@ class DoubleMartingaleBot:
         logger.info(self.last_asset_selection_note)
 
     def _switch_to_next_tradeable_pair(self, reason, relaxed=False):
-        if self._in_active_ladder() and reason != "step 4 rotation retry":
+        _switch_bypass = {"step 4 rotation retry", "penalty box"}
+        if self._in_active_ladder() and reason not in _switch_bypass:
             logger.info(
                 f"Mid-ladder lock — cannot switch from {self.asset} "
                 f"(step {self.session_round_count + 1}); reason was: {reason}"
