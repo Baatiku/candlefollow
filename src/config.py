@@ -284,9 +284,12 @@ ASSET_SUSPENSION_LOOKBACK = int(os.getenv("ASSET_SUSPENSION_LOOKBACK", "40"))
 ASSET_SUSPENSION_MIN_WILSON_WINRATE = float(os.getenv("ASSET_SUSPENSION_MIN_WILSON_WINRATE", "0.40"))
 ASSET_SUSPENSION_COOLDOWN_SECONDS = float(os.getenv("ASSET_SUSPENSION_COOLDOWN_SECONDS", str(6 * 3600)))
 
-# Score reweighting — applies CI/ER quality penalty to raw movement score at asset selection
+# Score reweighting — applies CI/ER/spike quality penalty to raw movement score at asset selection
 SCORE_REWEIGHT_ENABLED = os.getenv("SCORE_REWEIGHT_ENABLED", "true").lower() == "true"
 SCORE_REWEIGHT_ER_TARGET = float(os.getenv("SCORE_REWEIGHT_ER_TARGET", "0.5"))
+# Spike rejection: candles where body < this fraction of high-low range are counted as
+# "spikey" (price moved but was rejected by wicks). 0.35 = body must be ≥35% of range.
+SPIKE_BODY_THRESHOLD = float(os.getenv("SPIKE_BODY_THRESHOLD", "0.35"))
 
 # Sequential Steps Mode: when true, advances steps by schedule regardless of outcome.
 # When false (classic martingale): advance step only on loss, reset to S1 on any win.

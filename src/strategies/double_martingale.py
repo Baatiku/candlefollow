@@ -2087,17 +2087,34 @@ class DoubleMartingaleBot:
         except Exception:
             choppiness_index = 50.0
 
-        # ── Score reweighting: CI/ER quality penalty multiplier ──────────────
+        # ── Spike rejection ratio ────────────────────────────────────────────
+        # Fraction of candles where the body is smaller than SPIKE_BODY_THRESHOLD
+        # of the full high-low range.  These are candles where price moved but was
+        # batted back by wicks — directional rejection.  A high ratio means the
+        # market is resisting movement in both directions: bad for straddle entries.
+        _spike_thr = float(getattr(app_config, "SPIKE_BODY_THRESHOLD", 0.35))
+        _spike_count = 0
+        _spike_total = 0
+        for _c in candles:
+            _o, _h, _l, _cl = self._candle_ohlc(_c)
+            _rng = _h - _l
+            if _rng > 0 and _cl > 0:
+                _body_ratio = abs(_cl - _o) / _rng
+                _spike_total += 1
+                if _body_ratio < _spike_thr:
+                    _spike_count += 1
+        spike_rejection_ratio = round(_spike_count / _spike_total, 3) if _spike_total > 0 else 0.0
+
+        # ── Score reweighting: CI/ER/spike quality penalty multiplier ────────
         # Geometric-mean factor so ANY one bad dimension (chop, low ER, heavy
         # spikes) crushes the whole score — chop/spike dominate the ranking.
-        # spike_rejection_ratio is not computed at this stage; defaults to 0.
         quality_factor = 1.0
         adj_straddle_score = straddle_score
         if getattr(app_config, "SCORE_REWEIGHT_ENABLED", False):
             quality_factor = pattern_quality_factor(
                 choppiness_index=choppiness_index,
                 efficiency_ratio=er,
-                spike_rejection_ratio=0.0,
+                spike_rejection_ratio=spike_rejection_ratio,
                 er_target=getattr(app_config, "SCORE_REWEIGHT_ER_TARGET", 0.5),
             )
             adj_straddle_score = ph_adjusted_score(straddle_score, quality_factor)
@@ -2120,6 +2137,7 @@ class DoubleMartingaleBot:
             "candles": len(closes),
             "atr": round(atr, 6),
             "body_quality": body_quality,
+            "spike_rejection_ratio": spike_rejection_ratio,
         }
 
     def _live_entry_snapshot(self, asset_name, count=20):
