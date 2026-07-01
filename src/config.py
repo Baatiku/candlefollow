@@ -83,6 +83,13 @@ DEEP_STEP_MIN_CONF_BOOST = 0.25  # confidence floor additive boost at step 3+  (
 # Catches trades where every individual check clears its threshold but the signals
 # collectively contradict each other (low coherence) or the asset is on a cold streak
 # at a high-bet step.  Set ENHANCED_CONVICTION_ENABLED=false to disable entirely.
+# Choppiness / whipsaw filter — blocks entry when price oscillates without net direction.
+# CI >= 61.8 (standard Dreiss threshold) or ER < 0.15 triggers skip.
+CHOP_FILTER_ENABLED       = os.getenv("CHOP_FILTER_ENABLED", "true").lower() == "true"
+CHOP_CI_PERIOD            = int(  os.getenv("CHOP_CI_PERIOD",            "14"))
+CHOP_CI_THRESHOLD         = float(os.getenv("CHOP_CI_THRESHOLD",         "61.8"))
+CHOP_MIN_EFFICIENCY_RATIO = float(os.getenv("CHOP_MIN_EFFICIENCY_RATIO", "0.15"))
+
 ENHANCED_CONVICTION_ENABLED  = os.getenv("ENHANCED_CONVICTION_ENABLED",  "true").lower() == "true"
 MIN_CANDLE_BODY_QUALITY       = float(os.getenv("MIN_CANDLE_BODY_QUALITY",    "0.15"))  # body/range ratio floor
 MIN_SIGNAL_COHERENCE          = float(os.getenv("MIN_SIGNAL_COHERENCE",       "0.22"))  # coherence floor steps 1-2

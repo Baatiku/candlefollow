@@ -172,6 +172,10 @@ class DoubleMartingaleBot:
         self.rule_gate_min_er = getattr(app_config, "RULE_GATE_MIN_ER", 0.30)
         self.rule_gate_slope_override_min_bot_conf = getattr(app_config, "RULE_GATE_SLOPE_OVERRIDE_MIN_BOT_CONF", 0.70)
         self.rule_gate_misaligned_min_bot_conf = getattr(app_config, "RULE_GATE_MISALIGNED_MIN_BOT_CONF", 0.42)
+        self.chop_filter_enabled = getattr(app_config, "CHOP_FILTER_ENABLED", True)
+        self.chop_ci_period = getattr(app_config, "CHOP_CI_PERIOD", 14)
+        self.chop_ci_threshold = getattr(app_config, "CHOP_CI_THRESHOLD", 61.8)
+        self.chop_min_er = getattr(app_config, "CHOP_MIN_EFFICIENCY_RATIO", 0.15)
         
         # Load Config History
         self.config_history_path = os.path.join(os.path.dirname(__file__), "..", "..", "data", "config_history.json")
@@ -2169,9 +2173,35 @@ class DoubleMartingaleBot:
             if not closed_candles:
                 result["reason"] = "No closed candles"
                 return result
-                
+
+            # ── Choppiness / whipsaw filter ──────────────────────────────────
+            if self.chop_filter_enabled:
+                from market_metrics import is_choppy_market
+                chop = is_choppy_market(
+                    closed_candles,
+                    ci_period=self.chop_ci_period,
+                    ci_threshold=self.chop_ci_threshold,
+                    min_efficiency_ratio=self.chop_min_er,
+                )
+                if chop["choppy"]:
+                    logger.info(
+                        f"⏭️ Skipping {asset_name}: choppy market "
+                        f"(CI={chop['choppiness_index']}, ER={chop['efficiency_ratio_recent']})"
+                    )
+                    self._log_gate_rejection(
+                        "chop_filter",
+                        "choppy_market",
+                        ci=chop["choppiness_index"],
+                        er=chop["efficiency_ratio_recent"],
+                    )
+                    result["tradeable"] = False
+                    result["reason"] = "choppy_market"
+                    result["choppiness_index"] = chop["choppiness_index"]
+                    result["efficiency_ratio_recent"] = chop["efficiency_ratio_recent"]
+                    return result
+
             adx_value = self._calculate_adx(closed_candles, adx_period)
-            
+
             recent_candles = closed_candles[-lookback:]
             colors = []
             for c in recent_candles:

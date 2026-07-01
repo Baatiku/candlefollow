@@ -1,6 +1,7 @@
 """Pure market metrics for straddle suitability (shared by bot and analysis)."""
 from __future__ import annotations
 
+import math
 import config as app_config
 
 
@@ -34,6 +35,56 @@ def normalized_slope(closes: list[float], spot: float) -> float:
     denominator = sum((x[i] - x_mean) ** 2 for i in range(len(x)))
     raw_slope = numerator / denominator if denominator != 0 else 0.0
     return (raw_slope / spot) * 1_000_000.0
+
+
+def choppiness_index(candles: list[dict], period: int = 14) -> float:
+    """
+    Dreiss Choppiness Index, 0-100.
+    >=61.8 → whipsaw/choppy (covered ground but net movement near zero).
+    <=38.2 → trending. Reuses TR logic matching atr_from_candles pattern.
+    Returns 100.0 when insufficient data (treat as untradeable).
+    """
+    if len(candles) < period + 1:
+        return 100.0
+    window = candles[-(period + 1):]
+    trs = []
+    for i in range(1, len(window)):
+        _, high, low, _ = candle_ohlc(window[i])
+        _, _, _, prev_close = candle_ohlc(window[i - 1])
+        trs.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+    atr_sum = sum(trs)
+    highs = [candle_ohlc(c)[1] for c in window[1:]]
+    lows = [candle_ohlc(c)[2] for c in window[1:]]
+    rng = max(highs) - min(lows)
+    if rng <= 0 or atr_sum <= 0:
+        return 100.0
+    return round(100.0 * math.log10(atr_sum / rng) / math.log10(period), 2)
+
+
+def is_choppy_market(
+    candles: list[dict],
+    ci_period: int = 14,
+    ci_threshold: float = 61.8,
+    min_efficiency_ratio: float = 0.15,
+) -> dict:
+    """
+    Composite whipsaw gate: fires if EITHER Choppiness Index OR ER is non-directional.
+    Returns a dict with choppy bool plus individual metric values for logging/debug.
+    """
+    ci = choppiness_index(candles, period=ci_period)
+    closes = [candle_ohlc(c)[3] for c in candles if candle_ohlc(c)[3] > 0]
+    er = efficiency_ratio(closes[-ci_period:] if len(closes) >= ci_period else closes)
+
+    ci_flag = ci >= ci_threshold
+    er_flag = er < min_efficiency_ratio
+
+    return {
+        "choppy": ci_flag or er_flag,
+        "choppiness_index": ci,
+        "efficiency_ratio_recent": round(er, 3),
+        "ci_flag": ci_flag,
+        "er_flag": er_flag,
+    }
 
 
 def atr_from_candles(candles: list[dict], count: int = 5) -> float:
@@ -162,6 +213,7 @@ def entry_snapshot_from_candles(
             / max(1, min(15, len(candles))),
             2,
         ),
+        "choppiness_index": choppiness_index(candles),
     }
 
 
