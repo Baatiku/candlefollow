@@ -2749,11 +2749,14 @@ class DoubleMartingaleBot:
         self._apply_pair_penalty(PAIR_UNTRADEABLE_COOLDOWN_MINUTES, reason)
         self._pair_filter_skip_streak[self.asset] = 0
         if self.auto_select_asset:
-            self._apply_auto_asset_selection(reason=reason, relaxed=True)
+            # Use "penalty box" as the switch reason when mid-ladder so the mid-ladder
+            # lock is bypassed — the pair is penalized, so switching is correct behaviour.
+            switch_reason = "penalty box" if self._in_active_ladder() else reason
+            self._apply_auto_asset_selection(reason=switch_reason, relaxed=True)
             if not self._is_asset_penalty_blocked():
                 self._wait_for_price_data()
                 return
-            if self._switch_to_next_tradeable_pair(reason, relaxed=True):
+            if self._switch_to_next_tradeable_pair(switch_reason, relaxed=True):
                 self._wait_for_price_data()
                 return
         else:
@@ -2803,47 +2806,30 @@ class DoubleMartingaleBot:
         self._gate_rejection_log.appendleft(entry)
 
     def _handle_trade_gate_failure(self, reason):
-        """Chop/flat pairs: switch at step 1, wait mid-tier."""
+        """Chop/flat pairs: switch at step 1 or immediately mid-ladder; wait in manual mode."""
         if not self._is_pair_condition_failure(reason):
             self._skip_to_next_entry_window(reason)
             return
 
-        streak = self._pair_filter_skip_streak.get(self.asset, 0) + 1
-        self._pair_filter_skip_streak[self.asset] = streak
         label = (reason or "quality gate").replace("_", " ")
-        self.status_note = (
-            f"⚠️ {self.asset} skipped: {label} "
-            f"({streak}/{PAIR_UNTRADEABLE_SKIP_STREAK} — "
-            f"{'pair will be abandoned next' if streak >= PAIR_UNTRADEABLE_SKIP_STREAK - 1 else 'waiting for conditions to improve'})"
-        )
-        logger.warning(
-            f"{self.asset} unsuitable ({reason}) — "
-            f"{streak}/{PAIR_UNTRADEABLE_SKIP_STREAK} before pair pause"
-        )
-
-        if streak >= PAIR_UNTRADEABLE_SKIP_STREAK:
-            self._abandon_untradeable_pair(reason)
-            if not self._interruptible_sleep(5):
-                return
-            return
-
-        # Mid-tier (step 2+): never switch — stick to the asset until tier exhausts.
-        # Step 1: allowed to switch to a better pair since no trades placed yet.
-        if self.session_round_count == 0 and self.auto_select_asset:
-            if self._switch_to_next_tradeable_pair(reason):
-                self._wait_for_price_data()
-                return
+        logger.warning(f"{self.asset} unsuitable ({reason}) — abandoning pair")
 
         if not self.auto_select_asset:
-            self.last_asset_selection_note = (
-                f"{self.asset}: {reason}. Change pair or enable auto-select."
-            )
+            self.status_note = f"⚠️ {self.asset}: {label}. Change pair or enable auto-select."
+            self.last_asset_selection_note = self.status_note
             logger.warning(self.last_asset_selection_note)
             if not self._interruptible_sleep(90):
                 return
             return
 
-        self._skip_to_next_entry_window(reason)
+        # Step 1: no trades placed yet — switch immediately.
+        # Step 2+: also switch immediately — waiting N candles on a clearly-bad pair
+        # costs more time than switching now. Penalty box ensures a 5-min cooling period.
+        self.status_note = f"🔍 Abandoning {self.asset} ({label}) — scanning for another pair"
+        self._pair_filter_skip_streak[self.asset] = 0
+        self._abandon_untradeable_pair(reason)
+        if not self._interruptible_sleep(3):
+            return
 
     def _ensure_tradeable_market(self):
         """Called only at step 1 — safe to auto-select since no trades are in play."""
