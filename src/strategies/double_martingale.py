@@ -6315,6 +6315,7 @@ class DoubleMartingaleBot:
             "tier_failure_streak": getattr(self, "tier_failure_streak", 0),
             "consecutive_full_ladder_losses": getattr(self, "_consecutive_full_ladder_losses", 0),
             "consec_ladder_loss_limit": getattr(self, "_consec_ladder_loss_limit", 2),
+            "consec_ladder_loss_pause_min": round(getattr(self, "_consec_ladder_loss_pause_sec", 600.0) / 60),
             "window_profit": getattr(self, "window_profit", 0.0),
             "evaluation_window_minutes": EVALUATION_WINDOW_MINUTES,
             "evaluation_window_start": (

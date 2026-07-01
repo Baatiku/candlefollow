@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, Response, JSONResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, field_validator, ConfigDict
 import threading
 import time
@@ -26,7 +26,6 @@ from trade_log import (
     analytics as trade_analytics,
 )
 from pair_learning import pair_learning_summary, refresh_pair_learning
-from bot_state_store import state_file_path
 from deploy_fresh import should_wipe_on_deploy
 from config import TRADING_MODE, IQ_ACCOUNT_TYPE, BOT_API_KEY, ALLOWED_ORIGINS
 import config as app_config

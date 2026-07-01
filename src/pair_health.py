@@ -3,7 +3,6 @@ and pattern-quality score reweighting. Complements (does not replace) the
 per-round CI/ER/spike gates in market_metrics.py."""
 from __future__ import annotations
 import math
-import time
 
 
 def wilson_lower_bound(wins: int, total: int, z: float = 1.96) -> float:

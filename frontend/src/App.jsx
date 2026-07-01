@@ -760,7 +760,7 @@ function App() {
                   </span>
                 </div>
               )}
-              <div className="stat-card" title={`Pauses trading for 30 min after ${status.consec_ladder_loss_limit ?? 2} back-to-back full-ladder losses. Resets on any win.`}>
+              <div className="stat-card" title={`Pauses trading for ${status.consec_ladder_loss_pause_min ?? 10} min after ${status.consec_ladder_loss_limit ?? 3} back-to-back full-ladder losses. Resets on any win.`}>
                 <span className="stat-label">Full-ladder losses</span>
                 <span
                   className="stat-value"
