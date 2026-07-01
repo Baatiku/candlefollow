@@ -17,3 +17,12 @@ python-dotenv
 pytz
 uvicorn[standard]
 websocket-client==0.56.0
+fastapi
+getmac
+google-genai
+pandas
+psycopg2-binary
+python-dotenv
+pytz
+uvicorn[standard]
+websocket-client==0.56.0
