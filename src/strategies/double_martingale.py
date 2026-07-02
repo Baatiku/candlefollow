@@ -69,29 +69,52 @@ ALL_TIERS = [
     [10, 40,  100, 230, 550],  # Tier 10 (index  9)
     [11, 44,  110, 253, 605],  # Tier 11 (index 10)
     [12, 48,  120, 276, 660],  # Tier 12 (index 11)
+    [13, 52,  130, 299, 715],  # Tier 13 (index 12)
+    [14, 56,  140, 322, 770],  # Tier 14 (index 13)
+    [15, 60,  150, 345, 825],  # Tier 15 (index 14)
+    [16, 64,  160, 368, 880],  # Tier 16 (index 15)
 ]
 
-STANDARD_BUDGET_TIERS = ALL_TIERS  # alias kept for API compatibility
+# Independent copy for API compatibility — NOT an alias of ALL_TIERS so mutations
+# in update_config() cannot corrupt the canonical tier table.
+STANDARD_BUDGET_TIERS = [list(t) for t in ALL_TIERS]
 
-# Balance bracket → default tier and recovery tier (all 0-based indices into ALL_TIERS).
-# After a full 5-step loss the bot waits 5 min then trades on the recovery tier until
-# the account balance is ≥ the balance captured at the moment of exhaustion.
+# Balance bracket → default tier, 1st-recovery tier, and optional 2nd-recovery tier
+# (all 0-based indices into ALL_TIERS; None = no recovery at that level).
+#
+# Protection depth is sized to capital:
+#   $1–$499      — 1-level only (no recovery capital; pause on exhaustion)
+#   $500–$1099   — 2-level (default + 1st recovery)
+#   $1100+       — 3-level (default + 1st recovery + 2nd recovery)
+#
+# Exhaustion cascade:
+#   Default exhausted   → 5-min cooldown → 1st recovery (or PAUSE if None)
+#   1st rec exhausted   → 5-min cooldown → 2nd recovery (or PAUSE if None)
+#   2nd rec exhausted   → PAUSE, flag for manual review
+#   Any recovery exits  → balance ≥ _pre_loss_balance → back to default
 BALANCE_BRACKET_TABLE = [
-    # (min_bal, max_bal_inclusive, default_tier_idx, recovery_tier_idx)
-    (1,    399,   0,  2),   # $1–$399     Tier 1  default → Tier 3  recovery
-    (400,  599,   1,  3),   # $400–$599   Tier 2  default → Tier 4  recovery
-    (600,  799,   2,  4),   # $600–$799   Tier 3  default → Tier 5  recovery
-    (800,  999,   3,  5),   # $800–$999   Tier 4  default → Tier 6  recovery
-    (1000, 1499,  4,  6),   # $1000–$1499 Tier 5  default → Tier 7  recovery
-    (1500, 1999,  5,  7),   # $1500–$1999 Tier 6  default → Tier 8  recovery
-    (2000, 2999,  7,  9),   # $2000–$2999 Tier 8  default → Tier 10 recovery
-    (3000, 4999,  8,  10),  # $3000–$4999 Tier 9  default → Tier 11 recovery
-    (5000, None,  9,  11),  # $5000+      Tier 10 default → Tier 12 recovery
+    # (min_bal, max_bal_inclusive, default_idx, recovery_idx, second_recovery_idx)
+    (1,    499,   0,  None, None),  # $1–$499     Tier 1  → PAUSE on exhaustion
+    (500,  699,   0,  2,    None),  # $500–$699   Tier 1  → Tier 3
+    (700,  899,   1,  3,    None),  # $700–$899   Tier 2  → Tier 4
+    (900,  1099,  2,  4,    None),  # $900–$1099  Tier 3  → Tier 5
+    (1100, 1399,  0,  2,    4   ),  # $1100–$1399 Tier 1  → Tier 3  → Tier 5
+    (1400, 1699,  1,  3,    5   ),  # $1400–$1699 Tier 2  → Tier 4  → Tier 6
+    (1700, 2099,  2,  4,    6   ),  # $1700–$2099 Tier 3  → Tier 5  → Tier 7
+    (2100, 2399,  3,  5,    7   ),  # $2100–$2399 Tier 4  → Tier 6  → Tier 8
+    (2400, 2699,  4,  6,    8   ),  # $2400–$2699 Tier 5  → Tier 7  → Tier 9
+    (2700, 3099,  5,  7,    9   ),  # $2700–$3099 Tier 6  → Tier 8  → Tier 10
+    (3100, 3399,  6,  8,    10  ),  # $3100–$3399 Tier 7  → Tier 9  → Tier 11
+    (3400, 3699,  7,  9,    11  ),  # $3400–$3699 Tier 8  → Tier 10 → Tier 12
+    (3700, 4099,  8,  10,   12  ),  # $3700–$4099 Tier 9  → Tier 11 → Tier 13
+    (4100, 4399,  9,  11,   13  ),  # $4100–$4399 Tier 10 → Tier 12 → Tier 14
+    (4400, 4699,  10, 12,   14  ),  # $4400–$4699 Tier 11 → Tier 13 → Tier 15
+    (4700, None,  11, 13,   15  ),  # $4700+      Tier 12 → Tier 14 → Tier 16
 ]
 
 # BALANCE_TIER_TABLE kept for UI helper balance_tier_brackets() — (min_bal, default_ladder, recovery_ladder)
 BALANCE_TIER_TABLE = [
-    (row[0], list(ALL_TIERS[row[2]]), list(ALL_TIERS[row[3]]))
+    (row[0], list(ALL_TIERS[row[2]]), list(ALL_TIERS[row[3]]) if row[3] is not None else None)
     for row in BALANCE_BRACKET_TABLE
 ]
 
@@ -99,23 +122,26 @@ BALANCE_TIER_TABLE = [
 def balance_tier_brackets():
     """Balance ranges and ladder amounts for UI / API."""
     rows = []
-    for min_bal, max_bal, def_idx, rec_idx in BALANCE_BRACKET_TABLE:
+    for min_bal, max_bal, def_idx, rec_idx, sec_rec_idx in BALANCE_BRACKET_TABLE:
         if max_bal is not None:
             range_label = f"${min_bal:,}–${max_bal:,}"
         else:
             range_label = f"${min_bal:,}+"
-        default_ladder  = ALL_TIERS[def_idx]
-        recovery_ladder = ALL_TIERS[rec_idx]
+        default_ladder       = ALL_TIERS[def_idx]
+        recovery_ladder      = ALL_TIERS[rec_idx]      if rec_idx      is not None else None
+        sec_recovery_ladder  = ALL_TIERS[sec_rec_idx]  if sec_rec_idx  is not None else None
         rows.append(
             {
-                "min_balance":       min_bal,
-                "max_balance":       max_bal,
-                "range_label":       range_label,
-                "base_amount":       default_ladder[0],
-                "amounts":           list(default_ladder),
-                "default_tier":      def_idx + 1,
-                "recovery_tier":     rec_idx + 1,
-                "recovery_amounts":  list(recovery_ladder),
+                "min_balance":              min_bal,
+                "max_balance":              max_bal,
+                "range_label":              range_label,
+                "base_amount":              default_ladder[0],
+                "amounts":                  list(default_ladder),
+                "default_tier":             def_idx + 1,
+                "recovery_tier":            (rec_idx + 1)      if rec_idx      is not None else None,
+                "recovery_amounts":         list(recovery_ladder)     if recovery_ladder     is not None else None,
+                "second_recovery_tier":     (sec_rec_idx + 1)  if sec_rec_idx  is not None else None,
+                "second_recovery_amounts":  list(sec_recovery_ladder) if sec_recovery_ladder is not None else None,
             }
         )
     return rows
@@ -128,7 +154,7 @@ TIER_FAILURES_BEFORE_ESCALATE = 1
 TIER_1_FAILURES_BEFORE_ESCALATE = TIER_FAILURES_BEFORE_ESCALATE
 TIER_HIGHER_FAILURES_BEFORE_ESCALATE = TIER_FAILURES_BEFORE_ESCALATE
 LADDER_MAX_STEP_INDEX = 4       # 0-based; 5 steps per tier
-RECOVERY_TIER_CEILING = 11     # max tier index (Tier 12)
+RECOVERY_TIER_CEILING = 15     # max tier index (Tier 16)
 # No separate reserve tiers — recovery uses a dedicated higher tier.
 ROUND_RESERVE_TIERS = set()   # empty
 
@@ -411,9 +437,15 @@ class DoubleMartingaleBot:
         self._pending_recovery_rescan: bool = False  # set after recovery-tier win to force fresh scan at next S1
         # Recovery mode: after a full 5-step ladder loss the bot waits 5 min then
         # trades on the balance-band's recovery tier until balance ≥ _pre_loss_balance.
+        # _recovery_level: 0=not in recovery, 1=first recovery, 2=second recovery
         self._in_recovery_mode: bool = False
+        self._recovery_level: int = 0          # 0=default, 1=1st recovery, 2=2nd recovery
         self._pre_loss_balance: float = 0.0    # balance snapshot at moment of exhaustion
-        self._recovery_tier_idx: int = 0       # which ALL_TIERS index to use for recovery
+        self._recovery_tier_idx: int = 0       # which ALL_TIERS index is currently active for recovery
+        # 2nd-recovery tier captured at first-exhaustion time (before balance falls further).
+        # Used at level-2 escalation so cascade depth is anchored to the entry bracket,
+        # not to the post-loss balance which may have dropped into a lower band.
+        self._second_recovery_tier_idx_stored: int = -1
         # Pair quality degradation: rolling history of winning ERs per pair.
         # Used to skip a pair whose current ER has dropped well below its
         # recent winning average (the market is no longer as directional).
@@ -3488,7 +3520,8 @@ class DoubleMartingaleBot:
         """
         Return the BALANCE_BRACKET_TABLE row that matches the given balance.
         Iterates in ascending order; last matching row wins (highest bracket).
-        Returns (min_bal, max_bal, default_tier_idx, recovery_tier_idx).
+        Returns (min_bal, max_bal, default_tier_idx, recovery_tier_idx_or_None,
+                 second_recovery_tier_idx_or_None).
         """
         if balance is None:
             balance = self.safe_get_balance()
@@ -3506,11 +3539,24 @@ class DoubleMartingaleBot:
         return min(self._bracket_for_balance(balance)[2], max_tier)
 
     def _recovery_tier_idx_for_balance(self, balance=None):
-        """Recovery tier index for the balance band (0-based into ALL_TIERS)."""
+        """1st-recovery tier index (0-based into ALL_TIERS), or -1 if not available for this band."""
         if balance is None:
             balance = self.safe_get_balance()
         max_tier = len(self.budget_tiers) - 1 if self.budget_tiers else 0
-        return min(self._bracket_for_balance(balance)[3], max_tier)
+        rec = self._bracket_for_balance(balance)[3]
+        if rec is None:
+            return -1
+        return min(rec, max_tier)
+
+    def _second_recovery_tier_idx_for_balance(self, balance=None):
+        """2nd-recovery tier index (0-based into ALL_TIERS), or -1 if not available for this band."""
+        if balance is None:
+            balance = self.safe_get_balance()
+        max_tier = len(self.budget_tiers) - 1 if self.budget_tiers else 0
+        sec = self._bracket_for_balance(balance)[4]
+        if sec is None:
+            return -1
+        return min(sec, max_tier)
 
 
     def _init_risk_state(self):
@@ -4715,13 +4761,26 @@ class DoubleMartingaleBot:
             self.last_tier_exhaustion_at = None
 
         # Recovery mode state
-        self._in_recovery_mode  = bool(data.get("_in_recovery_mode", False))
-        self._pre_loss_balance   = float(data.get("_pre_loss_balance", 0.0))
-        self._recovery_tier_idx  = int(data.get("_recovery_tier_idx", 0))
+        self._in_recovery_mode                = bool(data.get("_in_recovery_mode", False))
+        self._recovery_level                   = int(data.get("_recovery_level", 0))
+        self._pre_loss_balance                 = float(data.get("_pre_loss_balance", 0.0))
+        self._recovery_tier_idx                = int(data.get("_recovery_tier_idx", 0))
+        # Stored at first-exhaustion time so level-2 escalation uses entry-bracket depth.
+        self._second_recovery_tier_idx_stored  = int(data.get("_second_recovery_tier_idx_stored", -1))
 
         max_tier = len(self.budget_tiers) - 1
         self.assigned_tier_index = min(max(0, self.assigned_tier_index), max_tier)
-        self._recovery_tier_idx  = min(max(0, self._recovery_tier_idx), max_tier)
+        # Preserve the -1 sentinel ("no recovery available") — only clamp when >= 0.
+        if self._recovery_tier_idx >= 0:
+            self._recovery_tier_idx = min(self._recovery_tier_idx, max_tier)
+        if self._second_recovery_tier_idx_stored >= 0:
+            self._second_recovery_tier_idx_stored = min(self._second_recovery_tier_idx_stored, max_tier)
+        # Enforce invariants: if not in recovery mode, level and sentinel must be consistent.
+        if not self._in_recovery_mode:
+            self._recovery_level                  = 0
+            self._second_recovery_tier_idx_stored = -1
+            if self._recovery_tier_idx < 0:
+                self._recovery_tier_idx = 0  # reset sentinel; no active recovery anyway
         if self.cumulative_debt <= 0:
             self.tier_failure_streak = 0
 
@@ -4852,6 +4911,9 @@ class DoubleMartingaleBot:
         floor = self._balance_baseline_tier_index(balance)
 
         # ── Recovery mode bypass ──────────────────────────────────────────────
+        # Pin strictly to the recovery tier — do NOT run risk-cap or ladder-downgrade
+        # logic here; those can silently move us off the recovery tier, violating the
+        # "hold recovery tier until balance ≥ _pre_loss_balance" invariant.
         if getattr(self, '_in_recovery_mode', False):
             rec_idx = getattr(self, '_recovery_tier_idx', floor)
             if self.current_tier_index != rec_idx:
@@ -4859,8 +4921,6 @@ class DoubleMartingaleBot:
                 self.session_round_count = 0
             if self.assigned_tier_index != rec_idx:
                 self.assigned_tier_index = rec_idx
-            self._apply_risk_tier_caps(limits)
-            self._apply_balance_ladder_downgrade(balance=balance)
             return
         # ─────────────────────────────────────────────────────────────────────
 
@@ -4919,28 +4979,132 @@ class DoubleMartingaleBot:
         self.window_profit += float(amount)
 
     def _start_tier_exhaustion_cooldown(self):
+        """
+        Called when the current tier has lost all steps.  Determines the next
+        recovery level and sets _recovery_tier_idx accordingly:
+
+          • Default exhausted (not in recovery)
+              → look up 1st-recovery tier for current balance band
+              → if available: enter _recovery_level=1
+              → if not (band has no recovery): _recovery_tier_idx=-1, no mode change
+          • 1st recovery exhausted (_recovery_level == 1)
+              → look up 2nd-recovery tier
+              → if available: escalate to _recovery_level=2
+              → if not: exit recovery, _recovery_tier_idx=-1
+          • 2nd recovery exhausted (_recovery_level == 2)
+              → no more levels, exit recovery, _recovery_tier_idx=-1
+
+        _maybe_escalate_assigned_tier_after_exhaustion() switches tiers if
+        _recovery_tier_idx >= 0, otherwise it triggers a hard stop.
+        """
         balance = self.safe_get_balance()
-        self._pre_loss_balance = balance
-        self._recovery_tier_idx = self._recovery_tier_idx_for_balance(balance)
-        self._in_recovery_mode = True
+        currently_in_recovery = getattr(self, '_in_recovery_mode', False)
+        recovery_level        = getattr(self, '_recovery_level', 0)
         now = datetime.datetime.utcnow()
+
+        if not currently_in_recovery:
+            # ── Default tier exhausted ────────────────────────────────────────
+            # Capture the full cascade NOW at the pre-loss balance so both
+            # recovery tiers are anchored to the entry bracket, not to the
+            # post-loss balance (which may have fallen into a lower band by
+            # the time 1st recovery is also exhausted).
+            self._pre_loss_balance = balance
+            rec_idx = self._recovery_tier_idx_for_balance(balance)
+            if rec_idx < 0:
+                # Band has no recovery capital — will hard-stop
+                self._recovery_tier_idx          = -1
+                self._second_recovery_tier_idx_stored = -1
+                self._in_recovery_mode           = False
+                self._recovery_level             = 0
+                logger.warning(
+                    f"Tier exhaustion — balance ${balance:.2f} is below the recovery "
+                    f"capital threshold. PAUSE required (manual top-up)."
+                )
+                self.status_note = (
+                    f"⛔ Balance ${balance:.2f} is too low for recovery — "
+                    f"manual top-up required."
+                )
+            else:
+                # Store both recovery tiers using the entry-bracket balance so the
+                # cascade depth cannot be reduced by later balance drawdown.
+                sec_idx = self._second_recovery_tier_idx_for_balance(balance)
+                self._recovery_tier_idx               = rec_idx
+                self._second_recovery_tier_idx_stored = sec_idx   # -1 if 2-level only
+                self._in_recovery_mode                = True
+                self._recovery_level                  = 1
+                pause_mins   = TIER_EXHAUSTION_COOLDOWN_MINUTES
+                default_num  = self._balance_baseline_tier_index(balance) + 1
+                recovery_num = rec_idx + 1
+                depth_label  = "→ 2nd-recovery" if sec_idx >= 0 else "(2-level only)"
+                self.status_note = (
+                    f"⏰ Tier {default_num} exhausted — "
+                    f"{pause_mins}m cooldown then recovery Tier {recovery_num} "
+                    f"{depth_label} until balance ≥ ${balance:.2f}"
+                )
+                logger.warning(
+                    f"Tier exhaustion cooldown — {pause_mins}m pause. "
+                    f"Pre-loss balance ${balance:.2f}. "
+                    f"Recovery: Tier {recovery_num} {depth_label} until balance recovers."
+                )
+
+        elif recovery_level == 1:
+            # ── 1st recovery tier exhausted ───────────────────────────────────
+            # Use the 2nd-recovery tier captured at first-exhaustion time (anchored
+            # to the entry bracket), NOT the current balance band (which may have
+            # dropped into a lower bracket after 1st-recovery losses).
+            sec_idx = getattr(self, '_second_recovery_tier_idx_stored', -1)
+            if sec_idx < 0:
+                # 2-level band or no 2nd recovery stored — will hard-stop
+                prev_rec_num            = self._recovery_tier_idx + 1
+                self._recovery_tier_idx = -1
+                self._in_recovery_mode  = False
+                self._recovery_level    = 0
+                logger.warning(
+                    f"1st recovery Tier {prev_rec_num} exhausted and no 2nd-recovery "
+                    f"tier was available for this balance band. PAUSE required."
+                )
+                self.status_note = (
+                    f"⛔ Recovery Tier {prev_rec_num} exhausted — no 2nd-recovery "
+                    f"configured for this band. Manual review required."
+                )
+            else:
+                prev_rec_num            = self._recovery_tier_idx + 1
+                self._recovery_tier_idx = sec_idx
+                self._recovery_level    = 2
+                # _in_recovery_mode stays True
+                pause_mins  = TIER_EXHAUSTION_COOLDOWN_MINUTES
+                sec_rec_num = sec_idx + 1
+                self.status_note = (
+                    f"⏰ Recovery Tier {prev_rec_num} exhausted — "
+                    f"{pause_mins}m cooldown then 2nd-recovery Tier {sec_rec_num} "
+                    f"until balance ≥ ${self._pre_loss_balance:.2f}"
+                )
+                logger.warning(
+                    f"1st recovery exhausted — {pause_mins}m cooldown then "
+                    f"2nd-recovery Tier {sec_rec_num} "
+                    f"(target balance ≥ ${self._pre_loss_balance:.2f})."
+                )
+
+        else:
+            # ── 2nd recovery tier exhausted — no further levels ───────────────
+            prev_rec_num            = self._recovery_tier_idx + 1
+            self._recovery_tier_idx = -1
+            self._in_recovery_mode  = False
+            self._recovery_level    = 0
+            logger.warning(
+                f"2nd recovery Tier {prev_rec_num} exhausted — "
+                f"all recovery levels used. PAUSE required."
+            )
+            self.status_note = (
+                f"⛔ All recovery tiers exhausted (2nd-recovery Tier {prev_rec_num} lost) "
+                f"— manual review required. "
+                f"Target balance was ${self._pre_loss_balance:.2f}."
+            )
+
         cooldown_until = now + datetime.timedelta(minutes=TIER_EXHAUSTION_COOLDOWN_MINUTES)
-        pause_mins = TIER_EXHAUSTION_COOLDOWN_MINUTES
-        default_num   = self._balance_baseline_tier_index(balance) + 1
-        recovery_num  = self._recovery_tier_idx + 1
-        self.status_note = (
-            f"⏰ Tier {default_num} exhausted — "
-            f"{pause_mins}m cooldown then recovery Tier {recovery_num} "
-            f"until balance ≥ ${balance:.2f}"
-        )
-        logger.warning(
-            f"Tier exhaustion cooldown — {pause_mins}m pause. "
-            f"Pre-loss balance ${balance:.2f}. "
-            f"Recovery: Tier {recovery_num} until balance recovers."
-        )
-        self.last_tier_exhaustion_at = now
+        self.last_tier_exhaustion_at       = now
         self.tier_exhaustion_cooldown_until = cooldown_until
-        self.window_had_tier_exhaustion = True
+        self.window_had_tier_exhaustion    = True
 
     def _tier_max_loss(self, tier_index):
         if tier_index < 0 or tier_index >= len(self.budget_tiers):
@@ -4986,8 +5150,9 @@ class DoubleMartingaleBot:
                     # Debt cleared by wins but balance not yet fully restored
                     # (e.g. due to IQ Option fees). Stay on recovery tier.
                     return False
-                # Balance restored — exit recovery mode
+                # Balance restored — exit recovery mode fully
                 self._in_recovery_mode = False
+                self._recovery_level   = 0
             self.tier_failure_streak = 0
             floor = self._balance_baseline_tier_index()
             self.assigned_tier_index = floor
@@ -5002,12 +5167,27 @@ class DoubleMartingaleBot:
 
     def _maybe_escalate_assigned_tier_after_exhaustion(self):
         """
-        After a full 5-step ladder loss: switch to the recovery tier for the
-        current balance band.  _start_tier_exhaustion_cooldown() already captured
-        _pre_loss_balance and _recovery_tier_idx before calling here.
-        Always returns False (no hard stop).
+        After a full 5-step ladder loss: switch to whichever recovery tier
+        _start_tier_exhaustion_cooldown() determined.
+
+        Returns True (hard stop) when no recovery tier is available
+        (_recovery_tier_idx < 0 or _in_recovery_mode is False after the
+        cooldown call), False otherwise.
         """
-        recovery_idx = getattr(self, '_recovery_tier_idx', 0)
+        recovery_idx = getattr(self, '_recovery_tier_idx', -1)
+        if recovery_idx < 0 or not getattr(self, '_in_recovery_mode', False):
+            # No recovery available — hard stop and flag for manual review
+            self._notify(
+                "⛔ All recovery options exhausted",
+                f"Balance ${self.safe_get_balance():.2f} — manual top-up or "
+                f"review required. Bot stopped.",
+            )
+            logger.error(
+                "No recovery tier available — triggering hard stop. "
+                "Manual intervention required."
+            )
+            return True  # hard_stop
+
         self.assigned_tier_index = recovery_idx
         self.current_tier_index  = recovery_idx
         self.session_round_count = 0
@@ -5015,15 +5195,17 @@ class DoubleMartingaleBot:
         self.tier_recovery_wins  = 0
         self.last_tier_exhaustion_at = None
 
+        level  = getattr(self, '_recovery_level', 1)
+        label  = f"{'2nd-r' if level == 2 else 'R'}ecovery"
         ladder = self.budget_tiers[recovery_idx]
         logger.warning(
-            f"💀 Full 5-step loss → recovery Tier {recovery_idx + 1} "
+            f"💀 Full 5-step loss → {label} Tier {recovery_idx + 1} "
             f"[{', '.join(f'${x:.0f}' for x in ladder)}] "
             f"(target balance ≥ ${getattr(self, '_pre_loss_balance', 0.0):.2f})"
         )
         self._notify(
-            f"Recovery mode: Tier {recovery_idx + 1}",
-            f"Default tier exhausted. Playing Tier {recovery_idx + 1} until "
+            f"{label} mode: Tier {recovery_idx + 1}",
+            f"Tier exhausted. Playing {label} Tier {recovery_idx + 1} until "
             f"balance ≥ ${getattr(self, '_pre_loss_balance', 0.0):.2f}. "
             f"Debt ${self.cumulative_debt:.2f}",
         )
@@ -5069,8 +5251,9 @@ class DoubleMartingaleBot:
             balance = self.safe_get_balance()
             pre_loss = getattr(self, '_pre_loss_balance', 0.0)
             if balance >= pre_loss:
-                # Balance restored — exit recovery and return to default tier
+                # Balance restored — exit recovery fully and return to default tier
                 self._in_recovery_mode = False
+                self._recovery_level   = 0
                 self.cumulative_debt   = 0.0
                 floor = self._balance_baseline_tier_index(balance)
                 self.assigned_tier_index = floor
@@ -6159,11 +6342,14 @@ class DoubleMartingaleBot:
             "ladder_pair": getattr(self, "ladder_pair", None),
             "ladder_loss_scores": list(getattr(self, "ladder_loss_scores", []) or []),
             # Recovery mode
-            "_in_recovery_mode":  getattr(self, "_in_recovery_mode",  False),
-            "_pre_loss_balance":   getattr(self, "_pre_loss_balance",   0.0),
-            "_recovery_tier_idx":  getattr(self, "_recovery_tier_idx",  0),
-            "recovery_tier":       getattr(self, "_recovery_tier_idx", 0) + 1,
-            "pre_loss_balance":    getattr(self, "_pre_loss_balance",   0.0),
+            "_in_recovery_mode":                 getattr(self, "_in_recovery_mode",                 False),
+            "_recovery_level":                   getattr(self, "_recovery_level",                   0),
+            "_pre_loss_balance":                 getattr(self, "_pre_loss_balance",                 0.0),
+            "_recovery_tier_idx":                getattr(self, "_recovery_tier_idx",                0),
+            "_second_recovery_tier_idx_stored":  getattr(self, "_second_recovery_tier_idx_stored",  -1),
+            "recovery_tier":                     getattr(self, "_recovery_tier_idx",                0) + 1,
+            "recovery_level":                    getattr(self, "_recovery_level",                   0),
+            "pre_loss_balance":                  getattr(self, "_pre_loss_balance",                 0.0),
         }
 
     def update_config(self, new_config, skip_history=False, tag="UPDATE"):
@@ -6194,8 +6380,10 @@ class DoubleMartingaleBot:
                     cleaned.append([max(1, float(v)) for v in tier])
                 if valid:
                     self.budget_tiers = cleaned
-                    STANDARD_BUDGET_TIERS.clear()
-                    STANDARD_BUDGET_TIERS.extend(cleaned)
+                    # NOTE: STANDARD_BUDGET_TIERS is now an independent copy of ALL_TIERS
+                    # (not an alias), so we do NOT mutate it here.  self.budget_tiers is the
+                    # authoritative per-instance tier table; STANDARD_BUDGET_TIERS is a
+                    # read-only reference snapshot for logging / API output.
                     # Recalculate current bet with new tiers
                     if self.current_tier_index >= len(self.budget_tiers):
                         self.current_tier_index = len(self.budget_tiers) - 1

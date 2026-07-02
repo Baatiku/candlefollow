@@ -3,4 +3,5 @@
 - [BestaBot strategy removals](bestabot-strategy-removals.md) — items 1,2,4,6,7 removed; items 3 & 5 kept; sliding-window penalty replaces sequential mode
 - [BestaBot pair-switching rule](bestabot-pair-switching.md) — scan once at ladder start, hold through losses, rescan only after win; penalty only on 2+ exhaustions/15min
 - [BestaBot candle follow + slope](bestabot-slope-align.md) — slope_signed now returned from _score_asset_movement; slope-alignment guard in _evaluate_candle_follow overrides single-candle direction when trend is strong
-- [CRM compartmentalised design](crm-design.md) — T0+T1 are the only active tiers; T1 exhaustion triggers CRM not T2; balance-proportional CRM-T1/T2 with 10-win recovery
+- [CRM compartmentalised design](crm-design.md) — STALE: CRM removed; see tier-recovery-system.md for current architecture
+- [3-level tier recovery system](tier-recovery-system.md) — 16-tier ALL_TIERS; 3-level cascade; pinning rule; _recovery_level state; restore invariants
