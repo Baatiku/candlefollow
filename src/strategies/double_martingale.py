@@ -55,45 +55,71 @@ DIGITAL_UNSUPPORTED_ASSETS = {
 # Each step of Tn recovers ALL prior tiers combined (T0..T(n-1)) in 3/2/1 wins at 85%.
 # Formula: target=L_cum+P; step1=target/(3×0.85); step2=(target+step1)/(2×0.85); step3=(target+step1+step2)/0.85
 # Tier is determined solely by current balance. On exhaustion: clear debt, reset to step 1.
-STANDARD_BUDGET_TIERS = [
-    [1, 3, 6, 16, 39, 98, 244, 610, 1526],
+# ── 12-tier step table — ratio 1:4:10:23:55, each tier N = N × base ratios ──
+ALL_TIERS = [
+    [1,  4,   10,  23,  55 ],  # Tier 1  (index  0)
+    [2,  8,   20,  46,  110],  # Tier 2  (index  1)
+    [3,  12,  30,  69,  165],  # Tier 3  (index  2)
+    [4,  16,  40,  92,  220],  # Tier 4  (index  3)
+    [5,  20,  50,  115, 275],  # Tier 5  (index  4)
+    [6,  24,  60,  138, 330],  # Tier 6  (index  5)
+    [7,  28,  70,  161, 385],  # Tier 7  (index  6)
+    [8,  32,  80,  184, 440],  # Tier 8  (index  7)
+    [9,  36,  90,  207, 495],  # Tier 9  (index  8)
+    [10, 40,  100, 230, 550],  # Tier 10 (index  9)
+    [11, 44,  110, 253, 605],  # Tier 11 (index 10)
+    [12, 48,  120, 276, 660],  # Tier 12 (index 11)
 ]
 
-# Balance-proportional tier table (highest matching min_balance wins).
-# 2.5× multiplier, 9 steps per tier.
-# Ranges: $1–$1,999 | $2k–$9,999 | $10k–$19,999 | $20k–$49,999 | $50k–$149,999 | $150k+
+STANDARD_BUDGET_TIERS = ALL_TIERS  # alias kept for API compatibility
+
+# Balance bracket → default tier and recovery tier (all 0-based indices into ALL_TIERS).
+# After a full 5-step loss the bot waits 5 min then trades on the recovery tier until
+# the account balance is ≥ the balance captured at the moment of exhaustion.
+BALANCE_BRACKET_TABLE = [
+    # (min_bal, max_bal_inclusive, default_tier_idx, recovery_tier_idx)
+    (1,    399,   0,  2),   # $1–$399     Tier 1  default → Tier 3  recovery
+    (400,  599,   1,  3),   # $400–$599   Tier 2  default → Tier 4  recovery
+    (600,  799,   2,  4),   # $600–$799   Tier 3  default → Tier 5  recovery
+    (800,  999,   3,  5),   # $800–$999   Tier 4  default → Tier 6  recovery
+    (1000, 1499,  4,  6),   # $1000–$1499 Tier 5  default → Tier 7  recovery
+    (1500, 1999,  5,  7),   # $1500–$1999 Tier 6  default → Tier 8  recovery
+    (2000, 2999,  7,  9),   # $2000–$2999 Tier 8  default → Tier 10 recovery
+    (3000, 4999,  8,  10),  # $3000–$4999 Tier 9  default → Tier 11 recovery
+    (5000, None,  9,  11),  # $5000+      Tier 10 default → Tier 12 recovery
+]
+
+# BALANCE_TIER_TABLE kept for UI helper balance_tier_brackets() — (min_bal, default_ladder, recovery_ladder)
 BALANCE_TIER_TABLE = [
-    (1,      [1, 3, 6, 16, 39, 98, 244, 610, 1526],                   [1, 3, 6, 16, 39, 98, 244, 610, 1526]),
-    (2000,   [3, 8, 19, 47, 117, 293, 732, 1831, 4578],                [3, 8, 19, 47, 117, 293, 732, 1831, 4578]),
-    (10000,  [9, 23, 56, 141, 352, 879, 2197, 5493, 13733],            [9, 23, 56, 141, 352, 879, 2197, 5493, 13733]),
-    (20000,  [20, 50, 125, 313, 781, 1953, 4883, 12207, 30518],        [20, 50, 125, 313, 781, 1953, 4883, 12207, 30518]),
-    (50000,  [45, 113, 281, 703, 1758, 4395, 10986, 27466, 68665],     [45, 113, 281, 703, 1758, 4395, 10986, 27466, 68665]),
-    (150000, [100, 250, 625, 1563, 3906, 9766, 24414, 61035, 152588],  [100, 250, 625, 1563, 3906, 9766, 24414, 61035, 152588]),
+    (row[0], list(ALL_TIERS[row[2]]), list(ALL_TIERS[row[3]]))
+    for row in BALANCE_BRACKET_TABLE
 ]
-
-# Step-4 asset rotation has been removed. The bot plays steps in order
-# regardless of which step it is on; no pair switch is triggered at step 4.
 
 
 def balance_tier_brackets():
-    """Balance ranges and ladder amounts for UI / API (highest matching row wins)."""
+    """Balance ranges and ladder amounts for UI / API."""
     rows = []
-    for i, (min_bal, t0, _t1) in enumerate(BALANCE_TIER_TABLE):
-        next_min = BALANCE_TIER_TABLE[i + 1][0] if i + 1 < len(BALANCE_TIER_TABLE) else None
-        if next_min is not None:
-            range_label = f"${min_bal:,}–${next_min - 1:,}"
+    for min_bal, max_bal, def_idx, rec_idx in BALANCE_BRACKET_TABLE:
+        if max_bal is not None:
+            range_label = f"${min_bal:,}–${max_bal:,}"
         else:
             range_label = f"${min_bal:,}+"
+        default_ladder  = ALL_TIERS[def_idx]
+        recovery_ladder = ALL_TIERS[rec_idx]
         rows.append(
             {
-                "min_balance": min_bal,
-                "max_balance": (next_min - 1) if next_min is not None else None,
-                "range_label": range_label,
-                "base_amount": t0[0],
-                "amounts": list(t0),
+                "min_balance":       min_bal,
+                "max_balance":       max_bal,
+                "range_label":       range_label,
+                "base_amount":       default_ladder[0],
+                "amounts":           list(default_ladder),
+                "default_tier":      def_idx + 1,
+                "recovery_tier":     rec_idx + 1,
+                "recovery_amounts":  list(recovery_ladder),
             }
         )
     return rows
+
 
 EVALUATION_WINDOW_MINUTES = 15
 TIER_EXHAUSTION_COOLDOWN_MINUTES = 5
@@ -101,10 +127,10 @@ TIER_SECOND_EXHAUSTION_COOLDOWN_MINUTES = 5
 TIER_FAILURES_BEFORE_ESCALATE = 1
 TIER_1_FAILURES_BEFORE_ESCALATE = TIER_FAILURES_BEFORE_ESCALATE
 TIER_HIGHER_FAILURES_BEFORE_ESCALATE = TIER_FAILURES_BEFORE_ESCALATE
-LADDER_MAX_STEP_INDEX = 6       # 0-based; 7 steps, no tiers
-RECOVERY_TIER_CEILING = 0      # No tier escalation — single flat sequence only
-# No reserve tiers; the bot never escalates beyond T0.
-ROUND_RESERVE_TIERS = set()   # empty — no reserve tiers
+LADDER_MAX_STEP_INDEX = 4       # 0-based; 5 steps per tier
+RECOVERY_TIER_CEILING = 11     # max tier index (Tier 12)
+# No separate reserve tiers — recovery uses a dedicated higher tier.
+ROUND_RESERVE_TIERS = set()   # empty
 
 # Sentinel value used internally to distinguish a genuine $0 profit from a timeout
 _TIMEOUT_SENTINEL = float("-inf")
@@ -382,7 +408,12 @@ class DoubleMartingaleBot:
         # is still tradeable — it only switches when the pair loses or goes flat.
         self._hot_pair: str = ""
         self._hot_pair_consecutive_wins: int = 0
-        self._pending_recovery_rescan: bool = False  # set after T2/T4 debt-chip win to force fresh scan at next S1
+        self._pending_recovery_rescan: bool = False  # set after recovery-tier win to force fresh scan at next S1
+        # Recovery mode: after a full 5-step ladder loss the bot waits 5 min then
+        # trades on the balance-band's recovery tier until balance ≥ _pre_loss_balance.
+        self._in_recovery_mode: bool = False
+        self._pre_loss_balance: float = 0.0    # balance snapshot at moment of exhaustion
+        self._recovery_tier_idx: int = 0       # which ALL_TIERS index to use for recovery
         # Pair quality degradation: rolling history of winning ERs per pair.
         # Used to skip a pair whose current ER has dropped well below its
         # recent winning average (the market is no longer as directional).
@@ -431,45 +462,26 @@ class DoubleMartingaleBot:
 
     @staticmethod
     def _enforce_standard_budget_tiers():
-        """Fallback to fixed tier ladders if custom amounts are not provided."""
-        return [list(t) for t in STANDARD_BUDGET_TIERS]
+        """Return the full 12-tier table."""
+        return [list(t) for t in ALL_TIERS]
 
     def _apply_standard_budget_tiers(self):
-        if not hasattr(self, 'budget_tiers') or not self.budget_tiers:
-            self.budget_tiers = self._enforce_standard_budget_tiers()
+        if not hasattr(self, 'budget_tiers') or len(getattr(self, 'budget_tiers', [])) != len(ALL_TIERS):
+            self.budget_tiers = [list(t) for t in ALL_TIERS]
 
     def _update_budget_tiers_for_balance(self, balance=None, force=False):
         """
-        Build tier list from balance bracket table.
-        Skipped mid-ladder unless force=True (e.g. periodic balance sync).
+        Ensure budget_tiers holds the full 12-tier table.
+        The active tier index is governed by _balance_baseline_tier_index(), not
+        by filtering the table down to a single entry.
         """
         if not getattr(self, 'auto_bracket_enabled', True):
             return
-        if not force and getattr(self, 'current_tier_index', 0) > 0:
-            return
-        if not force and getattr(self, 'session_round_count', 0) > 0:
-            return
-        if balance is None:
-            balance = self.safe_get_balance()
-        matched = None
-        for min_bal, t0, t1 in reversed(BALANCE_TIER_TABLE):
-            if balance >= min_bal:
-                matched = (min_bal, t0, t1)
-                break
-        if matched is None:
-            matched = (BALANCE_TIER_TABLE[0][0], BALANCE_TIER_TABLE[0][1], BALANCE_TIER_TABLE[0][2])
-        min_bal, t0, _t1 = matched
-        new_tiers = [list(t0)]
-        if new_tiers != getattr(self, 'budget_tiers', None):
-            self.budget_tiers = new_tiers
-            bracket = next(
-                (b for b in balance_tier_brackets() if b["min_balance"] == min_bal),
-                None,
-            )
-            range_label = bracket["range_label"] if bracket else f"≥${min_bal:,}"
+        if len(getattr(self, 'budget_tiers', [])) != len(ALL_TIERS):
+            self.budget_tiers = [list(t) for t in ALL_TIERS]
             logger.info(
-                f"📊 Tier bracket updated for balance ${balance:.2f} "
-                f"({range_label}): T0={t0}"
+                f"📊 Tier table initialised: {len(ALL_TIERS)} tiers × "
+                f"{len(ALL_TIERS[0])} steps"
             )
 
     def _iq_balance_id(self):
@@ -3472,20 +3484,33 @@ class DoubleMartingaleBot:
         )
 
 
-    def _balance_baseline_tier_index(self, balance=None):
+    def _bracket_for_balance(self, balance=None):
         """
-        Lowest tier index the bot may use as its floor given current capital.
-        Thresholds are (min_balance, tier_index) highest match wins.
+        Return the BALANCE_BRACKET_TABLE row that matches the given balance.
+        Iterates in ascending order; last matching row wins (highest bracket).
+        Returns (min_bal, max_bal, default_tier_idx, recovery_tier_idx).
         """
         if balance is None:
             balance = self.safe_get_balance()
-        floor = 0
-        for min_balance, tier_idx in self.baseline_balance_thresholds:
-            if balance >= min_balance:
-                floor = tier_idx
-                break
+        matched = BALANCE_BRACKET_TABLE[0]
+        for row in BALANCE_BRACKET_TABLE:
+            if balance >= row[0]:
+                matched = row
+        return matched
+
+    def _balance_baseline_tier_index(self, balance=None):
+        """Default tier index for the balance band (0-based into ALL_TIERS)."""
+        if balance is None:
+            balance = self.safe_get_balance()
         max_tier = len(self.budget_tiers) - 1 if self.budget_tiers else 0
-        return min(max(0, floor), max_tier)
+        return min(self._bracket_for_balance(balance)[2], max_tier)
+
+    def _recovery_tier_idx_for_balance(self, balance=None):
+        """Recovery tier index for the balance band (0-based into ALL_TIERS)."""
+        if balance is None:
+            balance = self.safe_get_balance()
+        max_tier = len(self.budget_tiers) - 1 if self.budget_tiers else 0
+        return min(self._bracket_for_balance(balance)[3], max_tier)
 
 
     def _init_risk_state(self):
@@ -4689,8 +4714,14 @@ class DoubleMartingaleBot:
         else:
             self.last_tier_exhaustion_at = None
 
+        # Recovery mode state
+        self._in_recovery_mode  = bool(data.get("_in_recovery_mode", False))
+        self._pre_loss_balance   = float(data.get("_pre_loss_balance", 0.0))
+        self._recovery_tier_idx  = int(data.get("_recovery_tier_idx", 0))
+
         max_tier = len(self.budget_tiers) - 1
         self.assigned_tier_index = min(max(0, self.assigned_tier_index), max_tier)
+        self._recovery_tier_idx  = min(max(0, self._recovery_tier_idx), max_tier)
         if self.cumulative_debt <= 0:
             self.tier_failure_streak = 0
 
@@ -4724,18 +4755,28 @@ class DoubleMartingaleBot:
             f"exhaustion streak {self.tier_failure_streak}/{needed}"
         )
 
+        # In recovery mode the evaluation window must never reset the tier — the
+        # bot stays on the recovery tier until balance ≥ _pre_loss_balance regardless
+        # of how much time has passed.
+        if getattr(self, '_in_recovery_mode', False):
+            logger.info(
+                f"⏱ Window closed — recovery mode active "
+                f"(Tier {self.current_tier_index + 1}, balance target "
+                f"${getattr(self, '_pre_loss_balance', 0.0):.2f}). "
+                f"Holding recovery tier."
+            )
+            self.window_profit = 0.0
+            self.window_had_tier_exhaustion = False
+            self.evaluation_window_start = self._evaluation_window_boundary()
+            self._sync_ladder_indices()
+            self.persist_state("evaluation window closed")
+            return
+
         if debt <= 0:
-            # Guard: if we are above T0 (mid-round on any tier), do NOT reset to
-            # T0 just because the evaluation window expired.  Tier transitions are
-            # driven exclusively by exhaustion / reserve-win completion, never by
-            # the timer.  This covers:
-            #   • T1/T3/T5 reserve recovery with pending reserve_wins_needed
-            #   • T2/T4 main-tier play (cumulative_debt held at 1.0 sentinel)
+            # Guard: if mid-ladder (above step 1), do NOT reset on timer.
             if self.current_tier_index > 0:
-                wins_left = getattr(self, 'reserve_wins_needed', 0)
                 logger.info(
                     f"Window closed — debt cleared but mid-round at T{self.current_tier_index + 1}"
-                    + (f", {wins_left} reserve win(s) still needed" if wins_left else "")
                     + ". Holding position (no timer-based tier reset)."
                 )
                 self.window_profit = 0.0
@@ -4801,13 +4842,27 @@ class DoubleMartingaleBot:
         With no debt, baseline tier tracks capital (never play below floor).
         With debt, assigned tier may escalate above floor for recovery.
         Risk governor caps max tier from tradable balance and drawdown mode.
-        In CRM mode, normal tier sync is bypassed — CRM manages its own ladder.
+        In recovery mode, normal floor sync is bypassed — recovery tier is held
+        until balance ≥ _pre_loss_balance.
         """
         if balance is None:
             balance = self.safe_get_balance()
         self._update_budget_tiers_for_balance(balance)
         limits = self._update_and_get_risk_limits(balance)
         floor = self._balance_baseline_tier_index(balance)
+
+        # ── Recovery mode bypass ──────────────────────────────────────────────
+        if getattr(self, '_in_recovery_mode', False):
+            rec_idx = getattr(self, '_recovery_tier_idx', floor)
+            if self.current_tier_index != rec_idx:
+                self.current_tier_index = rec_idx
+                self.session_round_count = 0
+            if self.assigned_tier_index != rec_idx:
+                self.assigned_tier_index = rec_idx
+            self._apply_risk_tier_caps(limits)
+            self._apply_balance_ladder_downgrade(balance=balance)
+            return
+        # ─────────────────────────────────────────────────────────────────────
 
         if self.cumulative_debt <= 0:
             # Do NOT reset to floor if we are above T0 (mid-round sequence in progress).
@@ -4864,18 +4919,24 @@ class DoubleMartingaleBot:
         self.window_profit += float(amount)
 
     def _start_tier_exhaustion_cooldown(self):
+        balance = self.safe_get_balance()
+        self._pre_loss_balance = balance
+        self._recovery_tier_idx = self._recovery_tier_idx_for_balance(balance)
+        self._in_recovery_mode = True
         now = datetime.datetime.utcnow()
-        cooldown_until = now + datetime.timedelta(
-            minutes=TIER_EXHAUSTION_COOLDOWN_MINUTES
-        )
+        cooldown_until = now + datetime.timedelta(minutes=TIER_EXHAUSTION_COOLDOWN_MINUTES)
         pause_mins = TIER_EXHAUSTION_COOLDOWN_MINUTES
+        default_num   = self._balance_baseline_tier_index(balance) + 1
+        recovery_num  = self._recovery_tier_idx + 1
         self.status_note = (
-            f"⏰ Tier {self.assigned_tier_index + 1} exhausted — "
-            f"cooling down {pause_mins}m before escalating to Tier {self.assigned_tier_index + 2}"
+            f"⏰ Tier {default_num} exhausted — "
+            f"{pause_mins}m cooldown then recovery Tier {recovery_num} "
+            f"until balance ≥ ${balance:.2f}"
         )
         logger.warning(
-            f"Tier exhaustion cooldown — {pause_mins}m pause before escalating "
-            f"from Tier {self.assigned_tier_index + 1} to Tier {self.assigned_tier_index + 2}"
+            f"Tier exhaustion cooldown — {pause_mins}m pause. "
+            f"Pre-loss balance ${balance:.2f}. "
+            f"Recovery: Tier {recovery_num} until balance recovers."
         )
         self.last_tier_exhaustion_at = now
         self.tier_exhaustion_cooldown_until = cooldown_until
@@ -4911,16 +4972,29 @@ class DoubleMartingaleBot:
         pass
 
     def _return_to_tier_one_step_one_if_debt_cleared(self):
-        """When debt hits zero, reset to balance-appropriate baseline tier step 1."""
+        """
+        When debt hits zero, check whether recovery is complete and reset to the
+        balance-appropriate default tier step 1.
+        In recovery mode, debt clearing alone is not enough — balance must also
+        be ≥ _pre_loss_balance before the bot returns to the default tier.
+        """
         if self.cumulative_debt <= 0:
             self.cumulative_debt = 0.0
+            if getattr(self, '_in_recovery_mode', False):
+                balance = self.safe_get_balance()
+                if balance < getattr(self, '_pre_loss_balance', 0.0):
+                    # Debt cleared by wins but balance not yet fully restored
+                    # (e.g. due to IQ Option fees). Stay on recovery tier.
+                    return False
+                # Balance restored — exit recovery mode
+                self._in_recovery_mode = False
             self.tier_failure_streak = 0
             floor = self._balance_baseline_tier_index()
             self.assigned_tier_index = floor
             self.current_tier_index = floor
             self.session_round_count = 0
             logger.info(
-                f"All debt recovered — baseline Tier {floor + 1} step 1 "
+                f"All debt recovered — default Tier {floor + 1} step 1 "
                 f"(balance ${self.safe_get_balance():.2f})."
             )
             return True
@@ -4928,101 +5002,47 @@ class DoubleMartingaleBot:
 
     def _maybe_escalate_assigned_tier_after_exhaustion(self):
         """
-        Compartmentalised 2-tier active pair system.
-        - T0 exhausted → escalate to T1 (recovery tier for this balance bracket).
-        - T1 exhausted → enter Capital Recovery Mode (CRM) instead of T2/T3/T4.
-        - CRM-T1 exhausted → advance to CRM-T2 (backup).
-        - CRM-T2 exhausted → accept total loss, reset cleanly to balance-floor tier.
+        After a full 5-step ladder loss: switch to the recovery tier for the
+        current balance band.  _start_tier_exhaustion_cooldown() already captured
+        _pre_loss_balance and _recovery_tier_idx before calling here.
         Always returns False (no hard stop).
         """
-        # ── Normal mode: sequential 6-tier escalation across 3 rounds ───────────
-        # Structure:
-        #   Round 1: T0 (main) → T1 (reserve)
-        #   Round 2: T2 (main) → T3 (reserve)  triggered when Round 1 is fully lost
-        #   Round 3: T4 (main) → T5 (reserve)  triggered when Round 2 is fully lost
-        #   T5 exhausted → total loss, clean reset to T0
-        current_tier = self.assigned_tier_index
-        max_tier = len(self.budget_tiers) - 1  # = 5
-
-        self.tier_failure_streak = 0
-        self.tier_recovery_wins = 0
+        recovery_idx = getattr(self, '_recovery_tier_idx', 0)
+        self.assigned_tier_index = recovery_idx
+        self.current_tier_index  = recovery_idx
         self.session_round_count = 0
+        self.tier_failure_streak = 0
+        self.tier_recovery_wins  = 0
         self.last_tier_exhaustion_at = None
 
-        if current_tier < max_tier:
-            next_tier = current_tier + 1
-            self.assigned_tier_index = next_tier
-            self.current_tier_index = next_tier
-            ladder = self.budget_tiers[next_tier]
-
-            # Even index = new round's main tier (T2 or T4). Prior round fully lost.
-            if next_tier % 2 == 0:
-                round_num = next_tier // 2 + 1
-                logger.warning(
-                    f"💀 Round {round_num - 1} fully lost → starting Round {round_num} "
-                    f"T{next_tier + 1} [{', '.join(f'${x:.0f}' for x in ladder)}]."
-                )
-                self._notify(
-                    f"Round {round_num} started",
-                    f"Round {round_num - 1} exhausted. "
-                    f"Playing Round {round_num} (T{next_tier + 1}+T{next_tier + 2}).",
-                )
-            else:
-                # T1/T3/T5: reserve tier within the same round (main tier exhausted).
-                # Reset wins counter — the reserve tier needs exactly 3 wins (max) to
-                # fully recover the main tier's loss, regardless of which steps are won.
-                round_num = next_tier // 2 + 1
-                self.reserve_wins_needed = 3
-                logger.warning(
-                    f"💀 T{current_tier + 1} exhausted → Round {round_num} reserve "
-                    f"T{next_tier + 1} [{', '.join(f'${x:.0f}' for x in ladder)}]. "
-                    f"Needs 3 reserve wins to recover."
-                )
-                self._notify(
-                    f"T{current_tier + 1} exhausted",
-                    f"Escalating to T{next_tier + 1} (Round {round_num} reserve). "
-                    f"3 wins needed to recover.",
-                )
-        else:
-            # T5 fully exhausted — accept total loss and reset cleanly to T0.
-            logger.warning(
-                f"❌ T5 (Round 3 reserve) exhausted — accepting total loss. "
-                f"Resetting to T0 S1."
-            )
-            self._notify(
-                "All rounds exhausted",
-                "T5 lost. Accepting total loss and resetting to T0 S1.",
-            )
-            self.current_tier_index = 0
-            self.assigned_tier_index = 0
-            self.round_collected = 0.0
-            self.round_target = 0.0
-            self.cumulative_debt = 0.0
-
+        ladder = self.budget_tiers[recovery_idx]
+        logger.warning(
+            f"💀 Full 5-step loss → recovery Tier {recovery_idx + 1} "
+            f"[{', '.join(f'${x:.0f}' for x in ladder)}] "
+            f"(target balance ≥ ${getattr(self, '_pre_loss_balance', 0.0):.2f})"
+        )
+        self._notify(
+            f"Recovery mode: Tier {recovery_idx + 1}",
+            f"Default tier exhausted. Playing Tier {recovery_idx + 1} until "
+            f"balance ≥ ${getattr(self, '_pre_loss_balance', 0.0):.2f}. "
+            f"Debt ${self.cumulative_debt:.2f}",
+        )
         return False
 
     def _apply_win_ladder_rules(self):
         """
-        Win ladder rules (multi-round 6-tier system with wins-counter recovery):
+        Win ladder rules (5-step flat ladder, default/recovery two-tier system):
 
-        ANY win always resets to S1 of the CURRENT tier — steps are NEVER
-        advanced on a win.  Tier only changes on exhaustion (all steps lost)
-        or when a reserve tier's wins counter reaches zero.
+        ANY win → reset to S1 of the CURRENT tier (steps never advance on a win).
 
-        Reserve tier wins counter (reserve_wins_needed):
-        ─────────────────────────────────────────────────
-        When a main tier (T0/T2/T4) is exhausted, the reserve tier starts
-        with reserve_wins_needed = 3.  Each win at step N (0-based) earns
-        (N+1) wins toward the counter:
-          S1 win → earns 1  (need 2 more at minimum)
-          S2 win → earns 2  (covers the S1 loss + 1 recovery win)
-          S3 win → earns 3  (covers S1+S2 losses + all 3 wins) → always done
+        Recovery mode (entered after a full 5-step loss):
+          • Check whether balance ≥ _pre_loss_balance.
+          • YES → recovery complete; return to default tier for the current balance band.
+          • NO  → stay on recovery tier S1 and keep accumulating wins.
 
-        When counter reaches 0 → return to T0 S1 (recovery complete).
-        If the reserve tier exhausts (all 3 steps lost) → escalate to next round.
-
-        Main tier wins (T0/T2/T4):
-          Reset to S1 of the same tier.  No counter change.
+        Normal mode (no recovery in progress):
+          • If debt cleared → zero debt and return to default tier.
+          • If debt remains → stay on current tier and flag a rescan.
         """
         if getattr(self, 'sequential_steps_mode', False):
             tier = self.budget_tiers[self.current_tier_index]
@@ -5035,130 +5055,65 @@ class DoubleMartingaleBot:
             )
             return
 
-        tier_idx  = self.current_tier_index
-        step_idx  = self.session_round_count          # 0-based step that just won
-        step_label = step_idx + 1                     # 1-based for logs
-        is_reserve = tier_idx in ROUND_RESERVE_TIERS  # {1, 3, 5}
+        tier_idx   = self.current_tier_index
+        step_idx   = self.session_round_count   # 0-based step that just won
+        step_label = step_idx + 1
 
-        self.session_round_count = 0  # always back to S1 of current tier
+        # Always back to S1 of current tier after any win
+        self.session_round_count = 0
         self._reset_ladder_tracking()
         self.tier_recovery_wins = 0
 
-        if not is_reserve:
-            # ── Main tier (T0/T2/T4) win ──────────────────────────────────────
-            floor = self._balance_baseline_tier_index()
-            if tier_idx == 0:
-                # T0: normal win — zero debt, stay at baseline floor
-                self.cumulative_debt = 0.0
+        if getattr(self, '_in_recovery_mode', False):
+            # ── Recovery mode win ─────────────────────────────────────────────
+            balance = self.safe_get_balance()
+            pre_loss = getattr(self, '_pre_loss_balance', 0.0)
+            if balance >= pre_loss:
+                # Balance restored — exit recovery and return to default tier
+                self._in_recovery_mode = False
+                self.cumulative_debt   = 0.0
+                floor = self._balance_baseline_tier_index(balance)
                 self.assigned_tier_index = floor
                 self.current_tier_index  = floor
                 logger.info(
-                    f"🏆 WIN on T{tier_idx + 1} S{step_label} → T{tier_idx + 1} S1"
-                )
-            else:
-                # T2/T4: recovery round — each win chips away at cumulative debt.
-                # The win reconciler already reduced cumulative_debt before calling
-                # here; we just need to decide whether debt is now cleared.
-                if self.cumulative_debt <= 0:
-                    # All prior-round debt cleared → return to T0.
-                    self.cumulative_debt = 0.0
-                    self.assigned_tier_index = floor
-                    self.current_tier_index  = floor
-                    logger.info(
-                        f"🏆 WIN on T{tier_idx + 1} S{step_label} — all prior debt "
-                        f"cleared. Returning to T{floor + 1} S1."
-                    )
-                    self._notify(
-                        "Debt cleared — returning to Round 1",
-                        f"T{tier_idx + 1} win cleared all accumulated losses. "
-                        f"Resuming T{floor + 1}.",
-                    )
-                else:
-                    # Debt still outstanding — stay on T2/T4 and keep recovering.
-                    # Flag a fresh asset scan before the next S1 so the bot is not
-                    # stuck on a pair that may have reversed since the sequence began.
-                    self.assigned_tier_index = tier_idx
-                    self._pending_recovery_rescan = True
-                    logger.info(
-                        f"🏆 WIN on T{tier_idx + 1} S{step_label} — "
-                        f"${self.cumulative_debt:.2f} debt remains. "
-                        f"Back to T{tier_idx + 1} S1 (will rescan for best asset)."
-                    )
-            return
-
-        # ── Reserve tier (T1/T3/T5) — wins counter ───────────────────────────
-        # Winning at step N earns (N+1) wins toward recovery.
-        wins_earned = step_idx + 1
-        self.reserve_wins_needed = max(
-            0, getattr(self, 'reserve_wins_needed', 3) - wins_earned
-        )
-        round_num = tier_idx // 2 + 1
-
-        if self.reserve_wins_needed == 0:
-            if tier_idx == 1:
-                # T1 done — Round 1 fully recovered, return to T0 S1.
-                self.cumulative_debt = 0.0
-                self.current_tier_index  = 0
-                self.assigned_tier_index = 0
-                logger.info(
-                    f"✅ T{tier_idx + 1} S{step_label} win earned {wins_earned} — "
-                    f"Round 1 recovery complete. Returning to T0 S1."
+                    f"✅ Recovery complete — balance ${balance:.2f} ≥ "
+                    f"pre-loss ${pre_loss:.2f}. "
+                    f"Returning to default Tier {floor + 1} S1."
                 )
                 self._notify(
-                    f"Round {round_num} recovery complete",
-                    f"T{tier_idx + 1} S{step_label} win covered all losses. "
-                    f"Resuming Round 1 (T0).",
+                    "Recovery complete",
+                    f"Balance ${balance:.2f} restored. "
+                    f"Back to default Tier {floor + 1}.",
                 )
             else:
-                # T3/T5 reserve done — the current round's main-tier loss is
-                # covered by these 3 reserve wins.  But ALL accumulated debt
-                # (prior rounds included) must reach zero before the bot can
-                # return to T0.  The win reconciler has already reduced
-                # cumulative_debt by this win's profit; check the remainder.
-                main_tier = tier_idx - 1  # T3 → T2, T5 → T4
-                if self.cumulative_debt <= 0:
-                    # All prior-round debt cleared — return to T0.
-                    self.cumulative_debt     = 0.0
-                    self.current_tier_index  = 0
-                    self.assigned_tier_index = 0
-                    logger.info(
-                        f"✅ T{tier_idx + 1} S{step_label} win earned {wins_earned} — "
-                        f"all debt cleared. Returning to T0 S1."
-                    )
-                    self._notify(
-                        f"Round {round_num} recovery complete",
-                        f"T{tier_idx + 1} cleared all accumulated losses. "
-                        f"Resuming Round 1 (T0).",
-                    )
-                else:
-                    # Still debt to recover — cycle back to T2/T4 and keep going.
-                    # T2/T4 wins will chip away further; when T2/T4 exhausts again
-                    # it will re-enter T3/T5 with reserve_wins_needed reset to 3.
-                    self.current_tier_index  = main_tier
-                    self.assigned_tier_index = main_tier
-                    logger.info(
-                        f"✅ T{tier_idx + 1} S{step_label} win earned {wins_earned} — "
-                        f"Round {round_num} main loss covered but ${self.cumulative_debt:.2f} "
-                        f"prior-round debt remains. Back to T{main_tier + 1} S1."
-                    )
-                    self._notify(
-                        f"Round {round_num} reserve done — continuing recovery",
-                        f"T{tier_idx + 1} covered its round's losses. "
-                        f"${self.cumulative_debt:.2f} prior debt remains — "
-                        f"resuming T{main_tier + 1} to recover it.",
-                    )
-        else:
-            # More reserve wins needed — stay on reserve tier S1.
-            # Do NOT zero cumulative_debt here. The natural debt reduction (via
-            # _finalize_session / round win reconciliation) already subtracted this
-            # win's profit. Zeroing would cause _close_evaluation_window and
-            # _return_to_tier_one_step_one_if_debt_cleared to wrongly see debt=0
-            # and reset to T0 before all recovery wins are collected.
-            self.assigned_tier_index = tier_idx
+                # Still recovering — stay on recovery tier, flag rescan
+                self.assigned_tier_index = tier_idx
+                self._pending_recovery_rescan = True
+                logger.info(
+                    f"💰 WIN on recovery T{tier_idx + 1} S{step_label} — "
+                    f"balance ${balance:.2f} (${pre_loss - balance:.2f} short of "
+                    f"pre-loss ${pre_loss:.2f}). Back to T{tier_idx + 1} S1."
+                )
+            return
+
+        # ── Normal mode win ───────────────────────────────────────────────────
+        floor = self._balance_baseline_tier_index()
+        if self.cumulative_debt <= 0:
+            self.cumulative_debt     = 0.0
+            self.assigned_tier_index = floor
+            self.current_tier_index  = floor
             logger.info(
-                f"💰 T{tier_idx + 1} S{step_label} win earned {wins_earned} — "
-                f"{self.reserve_wins_needed} more win(s) needed. "
-                f"Debt remaining ${self.cumulative_debt:.2f}. Back to T{tier_idx + 1} S1."
+                f"🏆 WIN on T{tier_idx + 1} S{step_label} — debt cleared. "
+                f"Default Tier {floor + 1} S1."
+            )
+        else:
+            # Partial recovery — stay on current tier, flag a rescan
+            self.assigned_tier_index  = tier_idx
+            self._pending_recovery_rescan = True
+            logger.info(
+                f"🏆 WIN on T{tier_idx + 1} S{step_label} — "
+                f"${self.cumulative_debt:.2f} debt remains. "
+                f"Back to T{tier_idx + 1} S1 (will rescan for best asset)."
             )
 
     def _finalize_session(self, reason):
@@ -6203,6 +6158,12 @@ class DoubleMartingaleBot:
             ),
             "ladder_pair": getattr(self, "ladder_pair", None),
             "ladder_loss_scores": list(getattr(self, "ladder_loss_scores", []) or []),
+            # Recovery mode
+            "_in_recovery_mode":  getattr(self, "_in_recovery_mode",  False),
+            "_pre_loss_balance":   getattr(self, "_pre_loss_balance",   0.0),
+            "_recovery_tier_idx":  getattr(self, "_recovery_tier_idx",  0),
+            "recovery_tier":       getattr(self, "_recovery_tier_idx", 0) + 1,
+            "pre_loss_balance":    getattr(self, "_pre_loss_balance",   0.0),
         }
 
     def update_config(self, new_config, skip_history=False, tag="UPDATE"):
