@@ -52,17 +52,17 @@ DIGITAL_UNSUPPORTED_ASSETS = {
 }
 
 # Recovery-ladder tiers — cumulative-recovery chain at 85% payout.
-# 3-step doubling ladder — each tier doubles the previous tier's amounts.
+# 5-step ladder — each tier doubles all amounts of Tier 1.
 # Tier is determined solely by current balance.
 # On exhaustion: reset to step 1 of the SAME tier — no cooldown, no hard stop.
-# ── 6-tier step table — 3 steps per tier, each step doubles ──
+# ── 6-tier step table — 5 steps per tier, Tier N = Tier 1 × 2^(N-1) ──
 ALL_TIERS = [
-    [5,   10,  20 ],  # Tier 1  (index 0)  $1–$199
-    [10,  20,  40 ],  # Tier 2  (index 1)  $200–$499
-    [20,  40,  80 ],  # Tier 3  (index 2)  $500–$999
-    [40,  80,  160],  # Tier 4  (index 3)  $1000–$2999
-    [80,  160, 320],  # Tier 5  (index 4)  $3000–$9999
-    [160, 320, 640],  # Tier 6  (index 5)  $10000–$29999
+    [5,   10,  20,   45,   100 ],  # Tier 1  (index 0)  $1–$199
+    [10,  20,  40,   90,   200 ],  # Tier 2  (index 1)  $200–$499
+    [20,  40,  80,   180,  400 ],  # Tier 3  (index 2)  $500–$999
+    [40,  80,  160,  360,  800 ],  # Tier 4  (index 3)  $1000–$2999
+    [80,  160, 320,  720,  1600],  # Tier 5  (index 4)  $3000–$9999
+    [160, 320, 640,  1440, 3200],  # Tier 6  (index 5)  $10000+
 ]
 
 # Independent copy for API compatibility — NOT an alias of ALL_TIERS so mutations
@@ -126,7 +126,7 @@ TIER_SECOND_EXHAUSTION_COOLDOWN_MINUTES = 0
 TIER_FAILURES_BEFORE_ESCALATE = 1
 TIER_1_FAILURES_BEFORE_ESCALATE = TIER_FAILURES_BEFORE_ESCALATE
 TIER_HIGHER_FAILURES_BEFORE_ESCALATE = TIER_FAILURES_BEFORE_ESCALATE
-LADDER_MAX_STEP_INDEX = 2       # 0-based; 3 steps per tier
+LADDER_MAX_STEP_INDEX = 4       # 0-based; 5 steps per tier
 RECOVERY_TIER_CEILING = 5      # max tier index (Tier 6)
 # No separate reserve tiers — recovery uses a dedicated higher tier.
 ROUND_RESERVE_TIERS = set()   # empty
