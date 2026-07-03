@@ -435,6 +435,7 @@ class DoubleMartingaleBot:
         self._hot_pair: str = ""
         self._hot_pair_consecutive_wins: int = 0
         self._pending_recovery_rescan: bool = False  # set after recovery-tier win to force fresh scan at next S1
+        self._ladder_start_balance: float = 0.0   # balance captured at step-1 of each new ladder
         # Recovery mode: after a full 8-step ladder loss the bot waits 5 min then
         # trades on the balance-band's recovery tier until balance ≥ _pre_loss_balance.
         # _recovery_level: 0=not in recovery, 1=first recovery, 2=second recovery
@@ -2766,7 +2767,10 @@ class DoubleMartingaleBot:
         logger.info(self.last_asset_selection_note)
 
     def _switch_to_next_tradeable_pair(self, reason, relaxed=False):
-        _switch_bypass = {"step 4 rotation retry", "penalty box"}
+        # "quality gate switch" is added so that mid-ladder pair switches are
+        # allowed when the committed pair genuinely fails the quality/strike
+        # gate — honouring the user rule "never skip a minute without trading".
+        _switch_bypass = {"step 4 rotation retry", "penalty box", "quality gate switch"}
         if self._in_active_ladder() and reason not in _switch_bypass:
             logger.info(
                 f"Mid-ladder lock — cannot switch from {self.asset} "
@@ -2845,17 +2849,17 @@ class DoubleMartingaleBot:
         self._gate_rejection_log.appendleft(entry)
 
     def _handle_trade_gate_failure(self, reason):
-        """Pair committed — wait for conditions to improve, never switch mid-recovery.
+        """Current pair failed quality gate — find another pair immediately.
 
-        Pair switching happens only after a WIN (at the next 'trading start' rescan).
-        If conditions are choppy or flat on the committed pair, wait for the next
-        candle rather than abandoning it. The pair was already vetted by the initial
-        scan before the ladder started.
+        Per the "never skip a minute" rule: if auto-select is on, iterate all
+        ranked candidates until one passes the quality gate so this candle can
+        still be traded.  Only if every candidate fails do we skip to the next
+        candle boundary.
         """
         label = (reason or "quality gate").replace("_", " ")
-        self.status_note = f"⏳ {self.asset}: {label} — waiting for conditions to improve"
 
         if not self.auto_select_asset:
+            self.status_note = f"⏳ {self.asset}: {label} — waiting for conditions to improve"
             self.last_asset_selection_note = (
                 f"{self.asset}: {label}. Change pair or enable auto-select."
             )
@@ -2864,11 +2868,74 @@ class DoubleMartingaleBot:
                 return
             return
 
+        # ── Immediate pair search — honour "never skip a minute" rule ─────────
+        origin_asset = self.asset
         logger.warning(
-            f"{self.asset} unsuitable ({reason}) at step {self.session_round_count + 1} "
-            f"— waiting for next candle (pair switch happens after a win)"
+            f"{origin_asset} unsuitable ({reason}) at step {self.session_round_count + 1} "
+            f"— scanning all candidates to trade this candle"
         )
+        if self._try_alternate_pair_for_candle(origin_asset, reason):
+            return  # caller re-evaluates with new asset via the outer `continue`
+
+        self.status_note = f"⏳ No tradeable pair found ({label}) — waiting for next candle"
         self._skip_to_next_entry_window(reason)
+
+    def _try_alternate_pair_for_candle(self, skipped_asset, reason):
+        """Iterate ranked candidates and switch to the first one that passes the
+        candle-follow quality gate.  Returns True if a tradeable alternative was
+        found and self.asset has been updated; False if every candidate failed.
+
+        Uses "quality gate switch" reason so mid-ladder switches are permitted
+        (the pair committed at ladder-start just became untradeable; skipping the
+        whole candle would be worse than switching mid-ladder to trade it).
+        """
+        candidates = self._resolve_asset_candidates()
+        # Score all candidates except the pair we are skipping.
+        ranked = []
+        for name in candidates:
+            if name == skipped_asset:
+                continue
+            if self._is_asset_penalty_blocked(name):
+                continue
+            movement = self._score_asset_movement(name)
+            if not movement:
+                continue
+            ranked.append((name, float(movement.get("straddle_score", 0))))
+        ranked.sort(key=lambda x: x[1], reverse=True)
+
+        if not ranked:
+            logger.warning(
+                f"No ranked candidates to rescue candle from {skipped_asset} ({reason})"
+            )
+            return False
+
+        for candidate, score in ranked:
+            if not self._switch_trading_asset(candidate):
+                continue
+            self._pair_filter_skip_streak[candidate] = 0
+            self._wait_for_price_data()
+            q = self._evaluate_candle_follow(candidate)
+            if q.get("tradeable"):
+                self.last_pair_quality = q
+                label = reason.replace("_", " ")
+                self.last_asset_selection_note = (
+                    f"Gate failure on {skipped_asset} ({label}) "
+                    f"→ {candidate} (score {score:.0f}) passes gate "
+                    f"at step {self.session_round_count + 1}"
+                )
+                logger.info(self.last_asset_selection_note)
+                self.status_note = ""
+                return True
+            logger.debug(
+                f"Candidate {candidate} also failed gate ({q.get('reason', '?')}) — trying next"
+            )
+
+        # All candidates exhausted — restore original so state stays clean.
+        logger.warning(
+            f"All {len(ranked)} candidates failed quality gate — will skip candle ({reason})"
+        )
+        self._switch_trading_asset(skipped_asset)
+        return False
 
     def _ensure_tradeable_market(self):
         """Called only at step 1 — safe to auto-select since no trades are in play."""
@@ -3728,6 +3795,10 @@ class DoubleMartingaleBot:
             self.ladder_pair = self.asset
             self.ladder_loss_scores = []
             self._step_score_skip_streak = 0
+            # Capture balance NOW (before any losses) so tier escalation uses
+            # the pre-ladder capital to look up the recovery bracket, not the
+            # post-loss balance which may have fallen to a lower band.
+            self._ladder_start_balance = self.safe_get_balance()
 
     def _record_ladder_step_loss(self, entry_quality):
         if entry_quality is None:
@@ -5004,12 +5075,18 @@ class DoubleMartingaleBot:
 
         if not currently_in_recovery:
             # ── Default tier exhausted ────────────────────────────────────────
-            # Capture the full cascade NOW at the pre-loss balance so both
-            # recovery tiers are anchored to the entry bracket, not to the
-            # post-loss balance (which may have fallen into a lower band by
-            # the time 1st recovery is also exhausted).
-            self._pre_loss_balance = balance
-            rec_idx = self._recovery_tier_idx_for_balance(balance)
+            # Use the balance captured at the *start* of the ladder (before any
+            # step losses) to look up the recovery bracket.  The current
+            # post-loss balance has already been reduced by all 8 step losses
+            # and may have fallen into a lower band that has no recovery tier,
+            # even though the account was well above the threshold when the
+            # ladder began.  _ladder_start_balance is set in _on_ladder_step_start.
+            bracket_balance = max(
+                float(getattr(self, '_ladder_start_balance', 0.0) or 0.0),
+                balance,          # fallback: use current if start was never captured
+            )
+            self._pre_loss_balance = bracket_balance
+            rec_idx = self._recovery_tier_idx_for_balance(bracket_balance)
             if rec_idx < 0:
                 # Band has no recovery capital — will hard-stop
                 self._recovery_tier_idx          = -1
@@ -5027,23 +5104,23 @@ class DoubleMartingaleBot:
             else:
                 # Store both recovery tiers using the entry-bracket balance so the
                 # cascade depth cannot be reduced by later balance drawdown.
-                sec_idx = self._second_recovery_tier_idx_for_balance(balance)
+                sec_idx = self._second_recovery_tier_idx_for_balance(bracket_balance)
                 self._recovery_tier_idx               = rec_idx
                 self._second_recovery_tier_idx_stored = sec_idx   # -1 if 2-level only
                 self._in_recovery_mode                = True
                 self._recovery_level                  = 1
                 pause_mins   = TIER_EXHAUSTION_COOLDOWN_MINUTES
-                default_num  = self._balance_baseline_tier_index(balance) + 1
+                default_num  = self._balance_baseline_tier_index(bracket_balance) + 1
                 recovery_num = rec_idx + 1
                 depth_label  = "→ 2nd-recovery" if sec_idx >= 0 else "(2-level only)"
                 self.status_note = (
                     f"⏰ Tier {default_num} exhausted — "
                     f"{pause_mins}m cooldown then recovery Tier {recovery_num} "
-                    f"{depth_label} until balance ≥ ${balance:.2f}"
+                    f"{depth_label} until balance ≥ ${bracket_balance:.2f}"
                 )
                 logger.warning(
                     f"Tier exhaustion cooldown — {pause_mins}m pause. "
-                    f"Pre-loss balance ${balance:.2f}. "
+                    f"Pre-loss balance ${bracket_balance:.2f}. "
                     f"Recovery: Tier {recovery_num} {depth_label} until balance recovers."
                 )
 
@@ -5689,7 +5766,11 @@ class DoubleMartingaleBot:
                                 self._apply_auto_asset_selection(reason="trading start")
                         self._on_ladder_step_start()
                         if not self._ensure_tradeable_market():
-                            wait_sec = 90 if not self.auto_select_asset else 30
+                            # No tradeable pair found at step-1.  With auto-select,
+                            # _ensure_tradeable_market already tried rescanning; a short
+                            # pause then retry is sufficient — skip the full 30-90s wait
+                            # so we don't miss the current candle unnecessarily.
+                            wait_sec = 90 if not self.auto_select_asset else 5
                             if not self._interruptible_sleep(wait_sec):
                                 break
                             continue
@@ -5787,6 +5868,12 @@ class DoubleMartingaleBot:
                     
                     if not strikes:
                         logger.warning("No qualifying strikes at fire time.")
+                        # Honour "never skip a minute" rule: iterate all candidates.
+                        if self.auto_select_asset:
+                            _ns_old = self.asset
+                            if self._try_alternate_pair_for_candle(_ns_old, "no strikes at fire time"):
+                                logger.info(f"No strikes on {_ns_old} — switched to {self.asset}, retrying candle")
+                                continue  # re-enter loop: evaluate new pair for this candle
                         self._skip_to_next_entry_window("no strikes at fire time")
                         continue
                         

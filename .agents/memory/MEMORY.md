@@ -5,3 +5,4 @@
 - [BestaBot candle follow + slope](bestabot-slope-align.md) — slope_signed now returned from _score_asset_movement; slope-alignment guard in _evaluate_candle_follow overrides single-candle direction when trend is strong
 - [CRM compartmentalised design](crm-design.md) — STALE: CRM removed; see tier-recovery-system.md for current architecture
 - [3-level tier recovery system](tier-recovery-system.md) — 16-tier ALL_TIERS; 3-level cascade; pinning rule; _recovery_level state; restore invariants
+- [Never-skip-minute + tier escalation fixes](never-skip-tier-fix.md) — _ladder_start_balance anchors recovery bracket; _try_alternate_pair_for_candle iterates all candidates before skipping
